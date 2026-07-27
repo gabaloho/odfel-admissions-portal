@@ -1,11 +1,21 @@
 {
-  "installCommand": "npm install && npm --prefix fedpolodfel-react install",
-  "buildCommand": "npm run ui:build",
-  "outputDirectory": "fedpolodfel-react/dist",
-  "rewrites": [
+  "version": 2,
+  "builds": [
     {
-      "source": "/(.*)",
-      "destination": "/index.html"
+      "src": "fedpolodfel-react/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/.*",
+      "dest": "/index.html"
     }
   ]
 }
