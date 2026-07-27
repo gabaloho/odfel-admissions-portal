@@ -326,7 +326,7 @@ ul.mm-listview li{ border-color: #626262; }
 .kingster-body-outer-wrapper, body.kingster-full .kingster-body-wrapper, .kingster-header-side-content{ background-color: #ffffff; } 
 body.kingster-boxed .kingster-body-wrapper, .gdlr-core-page-builder .gdlr-core-page-builder-body.gdlr-core-pb-livemode{ background-color: #ffffff; } 
 
-/* Custom brand lockup for site-clone header */
+/* Custom brand lockup for portal header */
 .kingster-logo-inner{ max-width: 360px !important; }
 .fpw-brand-link{ display: inline-flex; align-items: center; gap: 10px; text-decoration: none !important; max-width: 340px; }
 .fpw-brand-image{ width: 56px; height: auto; display: block; flex: 0 0 auto; }

@@ -4,7 +4,7 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 
 const START_URL = process.argv[2] || "https://odfel.gbokopoly.edu.ng/";
-const OUTPUT_DIR = path.resolve(process.argv[3] || "site-clone");
+const OUTPUT_DIR = path.resolve(process.argv[3] || "portal-snapshot");
 const MAX_PAGES = Number(process.argv[4] || 150);
 
 const allowedHost = new URL(START_URL).host;
@@ -146,7 +146,7 @@ async function main() {
     await processPage(next);
   }
 
-  console.log("Clone complete.");
+  console.log("Snapshot capture complete.");
   console.log(`Pages: ${visitedPages.size}`);
   console.log(`Assets: ${downloadedAssets.size}`);
   console.log(`Output: ${OUTPUT_DIR}`);

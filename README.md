@@ -1,149 +1,104 @@
-# ODFEL Local Clone + Admissions Starter
+# Federal Polytechnic Wannune Admissions Portal
 
-This workspace contains a **static snapshot** of the public pages from:
+This repository contains the current Federal Polytechnic Wannune admissions project.
 
-- <https://odfel.gbokopoly.edu.ng/>
+It is a unified application with:
 
-The snapshot is saved in `site-clone/` and is useful for:
+- React frontend in `fedpolodfel-react/`
+- Node.js/Express backend in `app.js`
+- SQLite local datastore in `data/app.db`
+- Admin and payment workflows for admissions operations
 
-- UI/UX reference
-- content structure planning
-- rebuilding your own portal with your own branding and backend
+## Current features
 
-This repository now also includes a working **Phase 1 admissions starter app** in Node.js.
-
-## Phase 1 features implemented
-
-- Applicant account registration and login
+- Applicant registration and login
 - Session-based authentication
-- Pre-application form (program and mode selection)
-- Invoice generation and invoice display
-- Mock invoice payment action (Pay Now)
-- Signed payment webhook endpoint at `/webhooks/payments` (Paystack/Flutterwave style)
-- Applicant dashboard (application + latest invoice)
-- Local persistent SQLite datastore at `data/app.db`
-- SQL schema draft for production migration at `docs/schema.sql`
+- Pre-application flow
+- Invoice generation and invoice view
+- Applicant dashboard
+- Check status and print document pages
+- Admin login and role-based access
+- Admin user management (`/admin/users`)
+- Admin payment verification console (`/admin/payments`)
+- Manual payment override with audit trail
+- Reconciliation report and CSV export
+- Signed payment webhook verification (`/webhooks/payments`)
 
-## Admin payment operations
+## Admin roles
 
-- Admin login: `/admin/login`
-- Admin account management: `/admin/users`
-- Payment verification and filtering console: `/admin/payments`
-- Reconciliation CSV export: `/admin/payments/export.csv`
-- Manual invoice payment status override with notes
-- Reconciliation report and auto-reconcile action
-- Payment transaction history and audit trail
+- `super_admin`: full access (users + payments)
+- `finance_admin`: payment operations access
+- `auditor`: payment view access
 
-Admin accounts are now database-backed (`admin_users` table) with role-based permissions:
-
-- `super_admin`: view, override, reconcile
-- `finance_admin`: view, override, reconcile
-- `auditor`: view-only
-
-Supported admin account actions (super admin):
-
-- Create admin accounts
-- Activate/deactivate admin accounts
-- Change admin role
-- Reset admin password
-
-Admin password security behavior:
-
-- New admin accounts must change password on first login (`/admin/change-password`)
-- Admin-reset passwords also force password change at next login
-- Password policy: minimum 10 chars, uppercase, lowercase, number, special character
-- Password expiry is tracked and enforced
-
-Default local admin credentials:
+Default local admin credentials (for fresh local seed):
 
 - Username: `admin`
-- Password: `AdminPass123!` (for fresh database seeds)
+- Password: `AdminPass123!`
 
-Set these in production using environment variables:
+## Environment variables
+
+Set these for production:
 
 - `ADMIN_USERNAME`
 - `ADMIN_PASSWORD`
 - `SESSION_SECRET`
 - `PAYMENT_WEBHOOK_SECRET`
 
-For webhook signature verification:
+Webhook signature handling:
 
-- Configure `PAYMENT_WEBHOOK_SECRET`
-- Paystack style: `x-paystack-signature` HMAC-SHA512 on raw body
-- Flutterwave style: `verif-hash` (or `x-flutterwave-signature`) equality check
+- Paystack: validates `x-paystack-signature` using HMAC-SHA512 raw body hash
+- Flutterwave: validates `verif-hash` / `x-flutterwave-signature`
 
-## What is already done
+## Local development
 
-- A custom crawler script was added at `scripts/clone-site.js`
-- Public pages and assets were downloaded to `site-clone/`
-
-## Run locally
-
-1. Install dependencies (already done once):
+1. Install root dependencies:
 
 ```bash
 npm install
 ```
 
-1. Start the unified app (recommended):
+2. Install frontend dependencies:
 
 ```bash
-npm run unified:start
+npm --prefix fedpolodfel-react install
 ```
 
-This builds `site-clone-react` and serves it from the same Express process on port 3000 while keeping admissions/admin/payment workflows in the same backend.
+3. Run development server:
 
-1. Start backend process directly:
+```bash
+npm run dev
+```
+
+4. Open:
+
+- <http://127.0.0.1:3000>
+
+## Build and run
+
+Build frontend bundle:
+
+```bash
+npm run unified:build
+```
+
+Run unified app:
 
 ```bash
 npm start
 ```
 
-This runs the same unified backend server and serves the built React frontend from `site-clone-react/dist`.
+## Deployment
 
-Then open:
+- Repository includes `vercel.json` for frontend deployment workflow.
+- Frontend output directory: `fedpolodfel-react/dist`
 
-- <http://127.0.0.1:3000>
+Note: The backend uses sessions and SQLite. For full production deployment, run backend on a server platform and migrate to MySQL/PostgreSQL.
 
-1. Re-generate the static snapshot any time:
+## Project structure
 
-```bash
-npm run clone:odfel
-```
-
-1. Serve only the static snapshot for visual reference:
-
-```bash
-npx http-server site-clone -p 8080
-```
-
-- <http://127.0.0.1:8080>
-
-## Important notes
-
-- The downloaded `.php` pages in `site-clone/` are static snapshots and do not include original server execution logic.
-- Forms, login, and payment workflows will not function end-to-end without a backend.
-- Replace logos/text/policies with your institution's original content and branding.
-- This starter backend currently stores data in SQLite for local development; production should use MySQL or PostgreSQL.
-- The local mock pay button is a simulation; signed webhook verification is implemented for production-style integration.
-
-## Suggested rebuild architecture (production)
-
-- Frontend: React/Next.js (or server-rendered PHP/Laravel Blade)
-- Backend: Laravel (PHP) or Node.js API
-- Database: MySQL/PostgreSQL
-- Payments: Paystack/Flutterwave (or your approved processor)
-- Admin modules:
-  - Program management
-  - Applicant review/screening
-  - Payment verification
-  - Document printing
-
-## Next implementation phases
-
-1. Replace JSON store with MySQL/PostgreSQL using `docs/schema.sql`
-2. Add payment gateway integration and callback verification
-3. Implement complete application sections and document uploads
-4. Build applicant actions: continue application, check status, print slip
-5. Build admin dashboard and role-based access control
-6. Add email/SMS notifications and audit logs
+- `app.js`: backend entry point
+- `src/data/store.js`: data access and persistence logic
+- `views/`: server-rendered admin/auth templates
+- `fedpolodfel-react/src/`: React app pages/components
+- `public/`: static assets served by Express
+- `docs/schema.sql`: SQL schema draft for RDBMS migration

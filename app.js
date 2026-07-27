@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "AdminPass123!";
 const PAYMENT_WEBHOOK_SECRET = process.env.PAYMENT_WEBHOOK_SECRET || "change-me-webhook-secret";
-const REACT_DIST_DIR = path.join(__dirname, "site-clone-react", "dist");
+const REACT_DIST_DIR = path.join(__dirname, "fedpolodfel-react", "dist");
 const REACT_INDEX_FILE = path.join(REACT_DIST_DIR, "index.html");
 const REACT_PUBLIC_ROUTES = new Set([
   "/",

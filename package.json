@@ -1,16 +1,16 @@
 {
-  "name": "odfel-clone-tool",
+  "name": "fedpolodfel-portal",
   "version": "1.0.0",
   "private": true,
-  "description": "ODFEL clone snapshot and admissions starter app",
+  "description": "Federal Polytechnic Wannune admissions portal",
   "scripts": {
-    "clone:odfel": "node scripts/clone-site.js",
+    "snapshot:capture": "node scripts/capture-site.js",
     "start": "node app.js",
     "dev": "node app.js",
-    "clone-react:dev": "npm --prefix site-clone-react run dev",
-    "clone-react:build": "npm --prefix site-clone-react run build",
-    "clone-react:preview": "npm --prefix site-clone-react run preview",
-    "unified:build": "npm run clone-react:build",
+    "ui:dev": "npm --prefix fedpolodfel-react run dev",
+    "ui:build": "npm --prefix fedpolodfel-react run build",
+    "ui:preview": "npm --prefix fedpolodfel-react run preview",
+    "unified:build": "npm run ui:build",
     "unified:start": "npm run unified:build && node app.js"
   },
   "dependencies": {
