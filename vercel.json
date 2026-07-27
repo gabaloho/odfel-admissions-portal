@@ -1,0 +1,11 @@
+{
+  "installCommand": "npm install && npm --prefix site-clone-react install",
+  "buildCommand": "npm run clone-react:build",
+  "outputDirectory": "site-clone-react/dist",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

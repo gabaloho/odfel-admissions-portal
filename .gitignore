@@ -1,0 +1,10 @@
+node_modules/
+site-clone/
+data/app.db
+data/*.db-shm
+data/*.db-wal
+.env
+site-clone-react/node_modules/
+site-clone-react/dist/
+.vercel/
+*.log
