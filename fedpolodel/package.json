@@ -4,13 +4,13 @@
   "private": true,
   "description": "Federal Polytechnic Wannune admissions portal",
   "scripts": {
-    "start": "node app.js",
-    "dev": "node app.js",
-    "ui:dev": "npm --prefix fedpolodfel-react run dev",
-    "ui:build": "npm --prefix fedpolodfel-react run build",
-    "ui:preview": "npm --prefix fedpolodfel-react run preview",
-    "unified:build": "npm run ui:build",
-    "unified:start": "npm run unified:build && node app.js"
+    "dev": "npm --prefix fedpolodfel-react run dev",
+    "build": "npm --prefix fedpolodfel-react run build",
+    "preview": "npm --prefix fedpolodfel-react run preview",
+    "backend:start": "node app.js",
+    "ui:dev": "npm run dev",
+    "ui:build": "npm run build",
+    "ui:preview": "npm run preview"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

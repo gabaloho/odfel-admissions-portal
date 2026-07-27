@@ -2,12 +2,12 @@
 
 This repository contains the current Federal Polytechnic Wannune admissions project.
 
-It is a unified application with:
+It is a React/Vite-first portal with optional Node.js/Express backend support.
 
 - React frontend in `fedpolodfel-react/`
-- Node.js/Express backend in `app.js`
-- SQLite local datastore in `data/app.db`
-- Admin and payment workflows for admissions operations
+- Optional backend entry in `app.js`
+- SQLite local datastore in `data/app.db` (backend mode)
+- Admin and payment workflows available in backend mode
 
 ## Current features
 
@@ -63,7 +63,7 @@ npm install
 npm --prefix fedpolodfel-react install
 ```
 
-3. Run development server:
+3. Run frontend development server (default):
 
 ```bash
 npm run dev
@@ -71,20 +71,28 @@ npm run dev
 
 4. Open:
 
-- <http://127.0.0.1:3000>
+- <http://127.0.0.1:5173>
 
-## Build and run
+## Build and preview
 
 Build frontend bundle:
 
 ```bash
-npm run unified:build
+npm run build
 ```
 
-Run unified app:
+Preview production bundle locally:
 
 ```bash
-npm start
+npm run preview
+```
+
+## Optional backend mode
+
+Run Express backend if you need server-side admissions/admin/payment endpoints:
+
+```bash
+npm run backend:start
 ```
 
 ## Deployment
