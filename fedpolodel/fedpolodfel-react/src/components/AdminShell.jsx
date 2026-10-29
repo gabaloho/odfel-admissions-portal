@@ -1,6 +1,7 @@
 import React from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { apiRequest } from "../lib/api";
+import { PortalBrand } from "./PortalBrand";
 
 export function AdminShell({ title, subtitle, children }) {
   const navigate = useNavigate();
@@ -16,6 +17,7 @@ export function AdminShell({ title, subtitle, children }) {
   return (
     <div className="portal-page">
       <div className="portal-card portal-wide">
+        <PortalBrand />
         <div className="portal-row">
           <div>
             <h1>{title}</h1>

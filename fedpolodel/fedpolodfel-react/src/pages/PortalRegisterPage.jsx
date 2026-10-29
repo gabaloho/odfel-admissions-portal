@@ -1,6 +1,8 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { apiRequest } from "../lib/api";
+import { PortalBrand } from "../components/PortalBrand";
+import { siteConfig } from "../lib/siteConfig";
 
 export function PortalRegisterPage() {
   const navigate = useNavigate();
@@ -39,8 +41,9 @@ export function PortalRegisterPage() {
   return (
     <div className="portal-page">
       <div className="portal-card">
+        <PortalBrand />
         <h1>Create Applicant Account</h1>
-        <p className="portal-sub">Start your admission process for Federal Polytechnic Wannune.</p>
+        <p className="portal-sub">Start your admission process with {siteConfig.institutionName} using {siteConfig.brandName}.</p>
         {error ? <div className="portal-alert">{error}</div> : null}
 
         <form onSubmit={handleSubmit} className="portal-form">

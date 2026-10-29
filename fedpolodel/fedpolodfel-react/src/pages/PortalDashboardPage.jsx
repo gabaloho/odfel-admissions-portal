@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { apiRequest } from "../lib/api";
+import { PortalBrand } from "../components/PortalBrand";
 
 export function PortalDashboardPage() {
   const navigate = useNavigate();
@@ -50,6 +51,7 @@ export function PortalDashboardPage() {
     return (
       <div className="portal-page">
         <div className="portal-card">
+          <PortalBrand />
           <h1>Applicant Dashboard</h1>
           <p className="portal-sub">Loading...</p>
         </div>
@@ -61,6 +63,7 @@ export function PortalDashboardPage() {
     return (
       <div className="portal-page">
         <div className="portal-card">
+          <PortalBrand />
           <h1>Applicant Dashboard</h1>
           <div className="portal-alert">{error}</div>
           <p className="portal-link-row">
@@ -76,6 +79,7 @@ export function PortalDashboardPage() {
   return (
     <div className="portal-page">
       <div className="portal-card portal-wide">
+        <PortalBrand />
         <div className="portal-row">
           <div>
             <h1>Applicant Dashboard</h1>

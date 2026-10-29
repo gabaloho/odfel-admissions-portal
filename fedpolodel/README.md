@@ -1,8 +1,8 @@
-# Federal Polytechnic Wannune Admissions Portal
+# ODFel Admissions Portal
 
-This repository contains the current Federal Polytechnic Wannune admissions project.
+ODFel is a reusable open and distance flexible learning admissions portal. Schools can clone it, configure their own identity and programmes, and publish their approved admission information.
 
-It is a React/Vite-first portal with optional Node.js/Express backend support.
+It is a React/Vite portal with optional Node.js/Express backend support.
 
 - React frontend in `fedpolodfel-react/`
 - Optional backend entry in `app.js`
@@ -15,6 +15,7 @@ It is a React/Vite-first portal with optional Node.js/Express backend support.
 - Session-based authentication
 - Pre-application flow
 - Invoice generation and invoice view
+- Local mock payment flow for development
 - Applicant dashboard
 - Check status and print document pages
 - Admin login and role-based access
@@ -37,7 +38,29 @@ Default local admin credentials (for fresh local seed):
 
 ## Environment variables
 
-Set these for production:
+Copy `fedpolodfel-react/.env.example` to `fedpolodfel-react/.env` and set your institution's details before building the frontend:
+
+- `VITE_INSTITUTION_NAME`
+- `VITE_INSTITUTION_WEBSITE` (optional; must use HTTP or HTTPS)
+- `VITE_INSTITUTION_EMAIL` (optional)
+- `VITE_INSTITUTION_PHONE` (optional)
+- `VITE_INSTITUTION_ADDRESS` (optional)
+- `VITE_INSTITUTION_LOGO` (optional root-relative path or HTTP/HTTPS URL)
+- `VITE_MODES_OF_STUDY` (comma-separated; defaults to full-time, part-time, and distance learning)
+
+Use `backend.env.example` as a reference for server configuration. Set `PROGRAMS_JSON` to a non-empty JSON array of objects with unique `id` and `name` values, for example:
+
+```json
+[{"id":"undergraduate","name":"Undergraduate Programme"},{"id":"postgraduate","name":"Postgraduate Programme"}]
+```
+
+Programs are seeded into SQLite only when the programs table is empty. Set this variable before the first backend start; for an existing local database, migrate or clear its program data deliberately before reseeding.
+
+Set the school's `APPLICATION_FEE_AMOUNT`, `APPLICATION_FEE_CURRENCY` (three-letter code), and optionally `APPLICATION_FEE_DESCRIPTION`. The development default is a free USD invoice; production startup requires an explicit fee amount. Set it to `0` only when applications are free.
+
+The included "Pay Now" action is a local mock, not a live payment gateway. Integrate and verify your payment provider before accepting real payments; webhook signature validation currently supports Paystack and Flutterwave.
+
+Also set these for production:
 
 - `ADMIN_USERNAME`
 - `ADMIN_PASSWORD`
@@ -102,11 +125,16 @@ npm run backend:start
 
 Note: The backend uses sessions and SQLite. For full production deployment, run backend on a server platform and migrate to MySQL/PostgreSQL.
 
+Before launch, replace the starter admission guidance with your institution's approved requirements in `fedpolodfel-react/src/pages/AdmissionRequirementPage.jsx`. The sample program and `.env.example` values are placeholders.
+
 ## Project structure
 
 - `app.js`: backend entry point
 - `src/data/store.js`: data access and persistence logic
-- `views/`: server-rendered admin/auth templates
 - `fedpolodfel-react/src/`: React app pages/components
 - `public/`: static assets served by Express
 - `docs/schema.sql`: SQL schema draft for RDBMS migration
+
+## License
+
+This project is licensed under the [MIT License](../LICENSE). Bundled third-party files with their own notices remain subject to those notices.

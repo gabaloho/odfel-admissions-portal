@@ -7,11 +7,47 @@ const DB_PATH = path.resolve(__dirname, "../../data/app.db");
 const db = new DatabaseSync(DB_PATH);
 
 const DEFAULT_PROGRAMS = [
-  { id: "nd-compsci", name: "National Diploma in Computer Science" },
-  { id: "nd-business", name: "National Diploma in Business Administration" },
-  { id: "hnd-accounting", name: "Higher National Diploma in Accounting" },
-  { id: "hnd-public-admin", name: "Higher National Diploma in Public Administration" }
+  { id: "sample-program", name: "Sample Program (configure before launch)" }
 ];
+
+function getConfiguredPrograms() {
+  const configuredPrograms = process.env.PROGRAMS_JSON;
+  if (!configuredPrograms) {
+    return DEFAULT_PROGRAMS;
+  }
+
+  let programs;
+  try {
+    programs = JSON.parse(configuredPrograms);
+  } catch {
+    throw new Error("PROGRAMS_JSON must be a valid JSON array of program objects.");
+  }
+
+  if (
+    !Array.isArray(programs) ||
+    programs.length === 0 ||
+    programs.some(
+      (program) =>
+        !program ||
+        typeof program.id !== "string" ||
+        !/^[a-z0-9][a-z0-9_-]*$/i.test(program.id) ||
+        typeof program.name !== "string" ||
+        !program.name.trim()
+    ) ||
+    new Set(programs.map((program) => program.id)).size !== programs.length
+  ) {
+    throw new Error(
+      "PROGRAMS_JSON must contain unique program IDs and non-empty program names."
+    );
+  }
+
+  return programs.map((program) => ({
+    id: program.id.trim(),
+    name: program.name.trim(),
+  }));
+}
+
+const CONFIGURED_PROGRAMS = getConfiguredPrograms();
 
 const SUCCESS_STATUSES = ["success", "successful", "completed", "paid"];
 const ADMIN_PASSWORD_EXPIRY_DAYS = 90;
@@ -191,7 +227,7 @@ function ensureSeed(options = {}) {
   const row = db.prepare("SELECT COUNT(*) AS count FROM programs").get();
   if (!row || row.count === 0) {
     const insertProgram = db.prepare("INSERT INTO programs (id, name) VALUES (?, ?)");
-    for (const program of DEFAULT_PROGRAMS) {
+    for (const program of CONFIGURED_PROGRAMS) {
       insertProgram.run(program.id, program.name);
     }
   }
@@ -660,7 +696,7 @@ function buildInvoiceNumber() {
   return `INV-${stamp}-${random}`;
 }
 
-function createInvoice({ userId, amount, feeDescription }) {
+function createInvoice({ userId, amount, feeDescription, currency }) {
   const now = new Date().toISOString();
   const invoice = {
     id: crypto.randomUUID(),
@@ -668,7 +704,7 @@ function createInvoice({ userId, amount, feeDescription }) {
     invoiceNumber: buildInvoiceNumber(),
     amount,
     feeDescription,
-    currency: "NGN",
+    currency,
     paymentStatus: "Unpaid",
     paymentReference: null,
     paymentProvider: null,

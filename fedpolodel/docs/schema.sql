@@ -35,7 +35,7 @@ CREATE TABLE invoices (
   invoice_number VARCHAR(60) NOT NULL UNIQUE,
   amount DECIMAL(12,2) NOT NULL,
   fee_description VARCHAR(190) NOT NULL,
-  currency VARCHAR(10) NOT NULL DEFAULT 'NGN',
+  currency VARCHAR(3) NOT NULL DEFAULT 'USD',
   payment_status VARCHAR(40) NOT NULL DEFAULT 'Unpaid',
   created_at DATETIME NOT NULL,
   CONSTRAINT fk_invoices_user FOREIGN KEY (user_id) REFERENCES users(id)

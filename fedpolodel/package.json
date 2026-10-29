@@ -1,8 +1,8 @@
 {
-  "name": "fedpolodfel-portal",
+  "name": "odfel-admissions-portal",
   "version": "1.0.0",
   "private": true,
-  "description": "Federal Polytechnic Wannune admissions portal",
+  "description": "Configurable open and distance flexible learning admissions portal",
   "scripts": {
     "dev": "npm --prefix fedpolodfel-react run dev",
     "build": "npm --prefix fedpolodfel-react run build",

@@ -10,6 +10,33 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "AdminPass123!";
+const applicationFeeAmountSetting = process.env.APPLICATION_FEE_AMOUNT;
+if (
+  process.env.NODE_ENV === "production" &&
+  (!applicationFeeAmountSetting || !applicationFeeAmountSetting.trim())
+) {
+  throw new Error("Set APPLICATION_FEE_AMOUNT before starting the production server (use 0 for free applications).");
+}
+if (applicationFeeAmountSetting != null && !applicationFeeAmountSetting.trim()) {
+  throw new Error("APPLICATION_FEE_AMOUNT must be a non-negative number.");
+}
+const APPLICATION_FEE_AMOUNT = applicationFeeAmountSetting == null
+  ? 0
+  : Number(applicationFeeAmountSetting);
+if (!Number.isFinite(APPLICATION_FEE_AMOUNT) || APPLICATION_FEE_AMOUNT < 0) {
+  throw new Error("APPLICATION_FEE_AMOUNT must be a non-negative number.");
+}
+const APPLICATION_FEE_CURRENCY = String(process.env.APPLICATION_FEE_CURRENCY || "USD")
+  .trim()
+  .toUpperCase();
+if (!/^[A-Z]{3}$/.test(APPLICATION_FEE_CURRENCY)) {
+  throw new Error("APPLICATION_FEE_CURRENCY must be a three-letter currency code.");
+}
+const APPLICATION_FEE_DESCRIPTION =
+  String(process.env.APPLICATION_FEE_DESCRIPTION || "Application Processing Fee").trim();
+if (!APPLICATION_FEE_DESCRIPTION) {
+  throw new Error("APPLICATION_FEE_DESCRIPTION must not be empty.");
+}
 const PAYMENT_WEBHOOK_SECRET = process.env.PAYMENT_WEBHOOK_SECRET || "change-me-webhook-secret";
 const REACT_DIST_DIR = path.join(__dirname, "fedpolodfel-react", "dist");
 const REACT_INDEX_FILE = path.join(REACT_DIST_DIR, "index.html");
@@ -434,8 +461,9 @@ app.post("/api/invoice/create", requireApiAuth, (req, res) => {
 
   const invoice = store.createInvoice({
     userId: req.session.user.id,
-    amount: 20000,
-    feeDescription: "Application Processing Fee",
+    amount: APPLICATION_FEE_AMOUNT,
+    feeDescription: APPLICATION_FEE_DESCRIPTION,
+    currency: APPLICATION_FEE_CURRENCY,
   });
 
   return sendApiSuccess(res, {
@@ -859,8 +887,9 @@ app.get("/invoice/create", requireAuth, (req, res) => {
 
   const invoice = store.createInvoice({
     userId: req.session.user.id,
-    amount: 20000,
-    feeDescription: "Application Processing Fee",
+    amount: APPLICATION_FEE_AMOUNT,
+    feeDescription: APPLICATION_FEE_DESCRIPTION,
+    currency: APPLICATION_FEE_CURRENCY,
   });
 
   req.session.message = "Invoice generated.";

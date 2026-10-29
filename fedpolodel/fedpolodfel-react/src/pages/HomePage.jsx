@@ -7,7 +7,7 @@ const html = String.raw`
             <div class="kingster-mobile-header-container kingster-container clearfix">
                 <div class="kingster-logo  kingster-item-pdlr">
                     <div class="kingster-logo-inner">
-                        <a class="fpw-brand-link" href="/" style="display:inline-flex;align-items:center;gap:10px;max-width:330px;text-decoration:none;"><img class="fpw-brand-image" src="/legacy/images/logo.jpg?v=fpw4" alt="Federal Polytechnic Wannune logo" style="width:56px;height:auto;display:block;"><span class="fpw-brand-text" style="display:block;max-width:260px;font-size:16px;font-weight:700;line-height:1.1;color:#111111;font-family:Times New Roman, serif;white-space:normal;">FEDERAL POLYTECHNIC WANNUNE</span></a>
+                        <a class="fpw-brand-link" href="/" style="display:inline-flex;align-items:center;gap:10px;max-width:330px;text-decoration:none;"><img class="fpw-brand-image" src="/legacy/images/logo.jpg?v=fpw4" alt="__INSTITUTION_NAME__ logo" style="width:56px;height:auto;display:block;"><span class="fpw-brand-text" style="display:block;max-width:260px;font-size:16px;font-weight:700;line-height:1.1;color:#111111;font-family:Times New Roman, serif;white-space:normal;">__INSTITUTION_NAME_UPPER__</span></a>
                     </div>
                 </div>
                 <div class="kingster-mobile-menu-right">
@@ -54,7 +54,7 @@ const html = String.raw`
                 <div class="kingster-top-bar-background"></div>
                 <div class="kingster-top-bar-container kingster-container ">
                     <div class="kingster-top-bar-container-inner clearfix">
-                        <div class="kingster-top-bar-left kingster-item-pdlr"><span id="i_fd84_addr" aria-hidden="true">&#128205;</span> KM 55, Makurdi - Gboko Road, Wannune. Benue State. Nigeria. PMB 102355 <span id="i_fd84_0" aria-hidden="true">&#9993;</span> <a href="mailto:info@fedpolywannune.edu.ng">info@fedpolywannune.edu.ng</a> <span id="i_fd84_1" aria-hidden="true">&#9742;</span> (+234)8020953504, (+234)8024093579</div>
+                        <div class="kingster-top-bar-left kingster-item-pdlr"><span id="i_fd84_addr" aria-hidden="true">&#128205;</span> __INSTITUTION_ADDRESS__ <span id="i_fd84_0" aria-hidden="true">&#9993;</span> <a href="mailto:__INSTITUTION_EMAIL__">__INSTITUTION_EMAIL__</a> <span id="i_fd84_1" aria-hidden="true">&#9742;</span> __INSTITUTION_PHONE__</div>
                         <div class="kingster-top-bar-right kingster-item-pdlr">
                             <ul id="kingster-top-bar-menu" class="sf-menu kingster-top-bar-menu kingster-top-bar-right-menu">
                                
@@ -71,7 +71,7 @@ const html = String.raw`
                     <div class="kingster-header-container-inner clearfix">
                         <div class="kingster-logo  kingster-item-pdlr">
                             <div class="kingster-logo-inner">
-                                <a class="fpw-brand-link" href="/" style="display:inline-flex;align-items:center;gap:10px;max-width:330px;text-decoration:none;"><img class="fpw-brand-image" src="/legacy/images/logo.jpg?v=fpw4" alt="Federal Polytechnic Wannune logo" style="width:56px;height:auto;display:block;"><span class="fpw-brand-text" style="display:block;max-width:260px;font-size:16px;font-weight:700;line-height:1.1;color:#111111;font-family:Times New Roman, serif;white-space:normal;">FEDERAL POLYTECHNIC WANNUNE</span></a>
+                                <a class="fpw-brand-link" href="/" style="display:inline-flex;align-items:center;gap:10px;max-width:330px;text-decoration:none;"><img class="fpw-brand-image" src="/legacy/images/logo.jpg?v=fpw4" alt="__INSTITUTION_NAME__ logo" style="width:56px;height:auto;display:block;"><span class="fpw-brand-text" style="display:block;max-width:260px;font-size:16px;font-weight:700;line-height:1.1;color:#111111;font-family:Times New Roman, serif;white-space:normal;">__INSTITUTION_NAME_UPPER__</span></a>
                             </div>
                         </div>
                         <div class="kingster-navigation kingster-item-pdlr clearfix ">
@@ -274,7 +274,7 @@ const html = String.raw`
                                                         <div class="gdlr-core-column-service-title-wrap">
                                                             <h3 class="gdlr-core-column-service-title gdlr-core-skin-title" style="font-size: 18px ;text-transform: none ;">Contact Us for Details</h3></div>
                                                         <div class="gdlr-core-column-service-content" style="font-size: 16px ;text-transform: none ;">
-                                                            <p>For more information, call  (+234)8020953504, (+234)8024093579 or send a mail to <a href="mailto:info@fedpolywannune.edu.ng" class="__cf_email__" data-cfemail="5a292f2a2a35282e1a3d383531352a353623743f3e2f74343d">info@fedpolywannune.edu.ng</a></p>
+                                                            <p>For more information, call  __INSTITUTION_PHONE__ or send a mail to <a href="mailto:__INSTITUTION_EMAIL__">__INSTITUTION_EMAIL__</a></p>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -299,7 +299,7 @@ const html = String.raw`
                                             <div class="gdlr-core-pbf-element">
                                                 <div class="gdlr-core-title-item gdlr-core-item-pdb clearfix  gdlr-core-left-align gdlr-core-title-item-caption-top gdlr-core-item-pdlr">
                                                     <div class="gdlr-core-title-item-title-wrap clearfix">
-                                                        <h3 class="gdlr-core-title-item-title gdlr-core-skin-title " style="font-size: 29px ;font-weight: 700 ;letter-spacing: 0px ;text-transform: none ;color: #ffffff ;">Our Mission at Federal Polytechnic Wannune</h3></div>
+                                                        <h3 class="gdlr-core-title-item-title gdlr-core-skin-title " style="font-size: 29px ;font-weight: 700 ;letter-spacing: 0px ;text-transform: none ;color: #ffffff ;">Our Mission at __INSTITUTION_NAME__</h3></div>
                                                 </div>
                                             </div>
                                         </div>
@@ -313,7 +313,7 @@ const html = String.raw`
                                                     <div class="gdlr-core-text-box-item-content fpw-mission-copy" style="font-size: 20px ;font-weight: 500 ;text-transform: none ;color: #ffffff ;">
                                                         
                                                         <p>
-                                                            Federal Polytechnic Wannune is committed to academic excellence,
+                                                            __INSTITUTION_NAME__ is committed to academic excellence,
                                                             skill development, and preparing students for successful careers.
                                                             We provide a practical and technology-driven learning environment
                                                             that supports innovation, character, and lifelong growth.
@@ -324,15 +324,12 @@ const html = String.raw`
                                                             important screening and verification updates.
                                                         </p>
                                                         <p>
-                                                            For more information, call (+234)8020953504 or send a mail to <a href="mailto:info@fedpolywannune.edu.ng" class="__cf_email__" data-cfemail="8dfef8fdfde2fff9cdeaefe2e6e2fde2e1f4a3e8e9f8a3e3ea">info@fedpolywannune.edu.ng</a>
+                                                            For more information, call __INSTITUTION_PHONE__ or send a mail to <a href="mailto:__INSTITUTION_EMAIL__">__INSTITUTION_EMAIL__</a>
                                                         </p>
                                                         <p>
                                                             All enquiries, whether made through email or phone, would 
                                                             be responded to not later than 48 hours from time of 
                                                             receipt. 
-                                                        </p>
-                                                        <p>
-                                                <img src="/legacy/upload/fpw-gate.jpg" alt="Federal Polytechnic Wannune main gate" style="max-width:100%;height:auto;border-radius:8px;">
                                                         </p>
                                                     </div>
                                                     <div class="gdlr-core-pbf-element">
@@ -354,25 +351,25 @@ const html = String.raw`
                 
                 <div class="kingster-copyright-wrapper">
                     <div class="kingster-copyright-container kingster-container clearfix">
-                        <div class="kingster-copyright-left kingster-item-pdlr">Copyright __CURRENT_YEAR__ All Right Reserved. Powered by <a href="https://www.gueengineering.com/" target="_blank" rel="noopener noreferrer"> GUE Engineering</a></div>
+                        <div class="kingster-copyright-left kingster-item-pdlr">Copyright __CURRENT_YEAR__ All Right Reserved. Powered by ODFel</div>
                         <div class="kingster-copyright-right kingster-item-pdlr">
                             <div class="gdlr-core-social-network-item gdlr-core-item-pdb  gdlr-core-none-align" id="div_1dd7_112">
-                                <a href="https://www.fedpolywannune.edu.ng/" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="official-website">
+                                <a href="__INSTITUTION_WEBSITE__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="official-website">
                                     <i class="bi bi-facebook"></i>
                                 </a>
-                                <a href="mailto:info@fedpolywannune.edu.ng" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="email">
+                                <a href="mailto:__INSTITUTION_EMAIL__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="email">
                                     <i class="bi bi-google"></i>
                                 </a>
-                                <a href="https://www.fedpolywannune.edu.ng/career_service_centre/" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="career-service">
+                                <a href="__INSTITUTION_WEBSITE__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="career-service">
                                     <i class="bi bi-linkedin"></i>
                                 </a>
-                                <a href="tel:+2348020953504" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="phone">
+                                <a href="tel:__INSTITUTION_PHONE_LINK__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="phone">
                                     <i class="bi bi-skype"></i>
                                 </a>
-                                <a href="https://www.fedpolywannune.edu.ng/apply-for-admission/" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="apply-for-admission">
+                                <a href="__INSTITUTION_WEBSITE__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="apply-for-admission">
                                     <i class="bi bi-twitter-x"></i>
                                 </a>
-                                <a href="https://www.fedpolywannune.edu.ng/login/" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="portal-login">
+                                <a href="__INSTITUTION_WEBSITE__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="portal-login">
                                     <i class="bi bi-instagram"></i>
                                 </a>
                             </div>
@@ -421,12 +418,11 @@ const html = String.raw`
 export function HomePage() {
   return (
     <LegacyMarkupPage
-      title={"Federal Polytechnic Wannune"}
+      title={"ODFel Admissions Portal"}
       bodyClassName={"home page-template-default page page-id-2039 gdlr-core-body woocommerce-no-js tribe-no-js kingster-body kingster-body-front kingster-full  kingster-with-sticky-navigation  kingster-blockquote-style-1 gdlr-core-link-to-lightbox"}
       html={html}
     />
   );
 }
-
 
 

@@ -7,7 +7,7 @@ const html = String.raw`
             <div class="kingster-mobile-header-container kingster-container clearfix">
                 <div class="kingster-logo  kingster-item-pdlr">
                     <div class="kingster-logo-inner">
-                        <a class="fpw-brand-link" href="/" style="display:inline-flex;align-items:center;gap:10px;max-width:330px;text-decoration:none;"><img class="fpw-brand-image" src="/legacy/images/logo.jpg?v=fpw4" alt="Federal Polytechnic Wannune logo" style="width:56px;height:auto;display:block;"><span class="fpw-brand-text" style="display:block;max-width:260px;font-size:16px;font-weight:700;line-height:1.1;color:#111111;font-family:Times New Roman, serif;white-space:normal;">FEDERAL POLYTECHNIC WANNUNE</span></a>
+                        <a class="fpw-brand-link" href="/" style="display:inline-flex;align-items:center;gap:10px;max-width:330px;text-decoration:none;"><img class="fpw-brand-image" src="/legacy/images/logo.jpg?v=fpw4" alt="__INSTITUTION_NAME__ logo" style="width:56px;height:auto;display:block;"><span class="fpw-brand-text" style="display:block;max-width:260px;font-size:16px;font-weight:700;line-height:1.1;color:#111111;font-family:Times New Roman, serif;white-space:normal;">__INSTITUTION_NAME_UPPER__</span></a>
                     </div>
                 </div>
                 <div class="kingster-mobile-menu-right">
@@ -54,7 +54,7 @@ const html = String.raw`
                 <div class="kingster-top-bar-background"></div>
                 <div class="kingster-top-bar-container kingster-container ">
                     <div class="kingster-top-bar-container-inner clearfix">
-                        <div class="kingster-top-bar-left kingster-item-pdlr"><span id="i_fd84_addr" aria-hidden="true">&#128205;</span> KM 55, Makurdi - Gboko Road, Wannune. Benue State. Nigeria. PMB 102355 <span id="i_fd84_0" aria-hidden="true">&#9993;</span> <a href="mailto:info@fedpolywannune.edu.ng">info@fedpolywannune.edu.ng</a> <span id="i_fd84_1" aria-hidden="true">&#9742;</span> (+234)8020953504, (+234)8024093579</div>
+                        <div class="kingster-top-bar-left kingster-item-pdlr"><span id="i_fd84_addr" aria-hidden="true">&#128205;</span> __INSTITUTION_ADDRESS__ <span id="i_fd84_0" aria-hidden="true">&#9993;</span> <a href="mailto:__INSTITUTION_EMAIL__">__INSTITUTION_EMAIL__</a> <span id="i_fd84_1" aria-hidden="true">&#9742;</span> __INSTITUTION_PHONE__</div>
                         <div class="kingster-top-bar-right kingster-item-pdlr">
                             <ul id="kingster-top-bar-menu" class="sf-menu kingster-top-bar-menu kingster-top-bar-right-menu">
                                
@@ -71,7 +71,7 @@ const html = String.raw`
                     <div class="kingster-header-container-inner clearfix">
                         <div class="kingster-logo  kingster-item-pdlr">
                             <div class="kingster-logo-inner">
-                                <a class="fpw-brand-link" href="/" style="display:inline-flex;align-items:center;gap:10px;max-width:330px;text-decoration:none;"><img class="fpw-brand-image" src="/legacy/images/logo.jpg?v=fpw4" alt="Federal Polytechnic Wannune logo" style="width:56px;height:auto;display:block;"><span class="fpw-brand-text" style="display:block;max-width:260px;font-size:16px;font-weight:700;line-height:1.1;color:#111111;font-family:Times New Roman, serif;white-space:normal;">FEDERAL POLYTECHNIC WANNUNE</span></a>
+                                <a class="fpw-brand-link" href="/" style="display:inline-flex;align-items:center;gap:10px;max-width:330px;text-decoration:none;"><img class="fpw-brand-image" src="/legacy/images/logo.jpg?v=fpw4" alt="__INSTITUTION_NAME__ logo" style="width:56px;height:auto;display:block;"><span class="fpw-brand-text" style="display:block;max-width:260px;font-size:16px;font-weight:700;line-height:1.1;color:#111111;font-family:Times New Roman, serif;white-space:normal;">__INSTITUTION_NAME_UPPER__</span></a>
                             </div>
                         </div>
                         <div class="kingster-navigation kingster-item-pdlr clearfix ">
@@ -181,25 +181,25 @@ const html = String.raw`
                 
                 <div class="kingster-copyright-wrapper">
                     <div class="kingster-copyright-container kingster-container clearfix">
-                        <div class="kingster-copyright-left kingster-item-pdlr">Copyright __CURRENT_YEAR__ All Right Reserved. Powered by <a href="https://www.gueengineering.com/" target="_blank" rel="noopener noreferrer"> GUE Engineering</a></div>
+                        <div class="kingster-copyright-left kingster-item-pdlr">Copyright __CURRENT_YEAR__ All Right Reserved. Powered by ODFel</div>
                         <div class="kingster-copyright-right kingster-item-pdlr">
                             <div class="gdlr-core-social-network-item gdlr-core-item-pdb  gdlr-core-none-align" id="div_1dd7_112">
-                                <a href="https://www.fedpolywannune.edu.ng/" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="official-website">
+                                <a href="__INSTITUTION_WEBSITE__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="official-website">
                                     <i class="bi bi-facebook"></i>
                                 </a>
-                                <a href="mailto:info@fedpolywannune.edu.ng" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="email">
+                                <a href="mailto:__INSTITUTION_EMAIL__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="email">
                                     <i class="bi bi-google"></i>
                                 </a>
-                                <a href="https://www.fedpolywannune.edu.ng/career_service_centre/" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="career-service">
+                                <a href="__INSTITUTION_WEBSITE__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="career-service">
                                     <i class="bi bi-linkedin"></i>
                                 </a>
-                                <a href="tel:+2348020953504" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="phone">
+                                <a href="tel:__INSTITUTION_PHONE_LINK__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="phone">
                                     <i class="bi bi-skype"></i>
                                 </a>
-                                <a href="https://www.fedpolywannune.edu.ng/apply-for-admission/" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="apply-for-admission">
+                                <a href="__INSTITUTION_WEBSITE__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="apply-for-admission">
                                     <i class="bi bi-twitter-x"></i>
                                 </a>
-                                <a href="https://www.fedpolywannune.edu.ng/login/" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="portal-login">
+                                <a href="__INSTITUTION_WEBSITE__" target="_blank" rel="noopener noreferrer" class="gdlr-core-social-network-icon" title="portal-login">
                                     <i class="bi bi-instagram"></i>
                                 </a>
                             </div>
@@ -228,7 +228,7 @@ const html = String.raw`
 export function CheckStatusPage() {
   return (
     <LegacyMarkupPage
-      title={"Federal Polytechnic Wannune"}
+      title={"ODFel Admissions Portal"}
       bodyClassName={"home page-template-default page page-id-2039 gdlr-core-body woocommerce-no-js tribe-no-js kingster-body kingster-body-front kingster-full  kingster-with-sticky-navigation  kingster-blockquote-style-1 gdlr-core-link-to-lightbox"}
       html={html}
     />

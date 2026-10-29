@@ -59,6 +59,31 @@ body {
   color: #11324a;
 }
 
+.portal-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.portal-brand img {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+}
+
+.portal-brand a {
+  color: #0d4d73;
+  font-size: 1.2rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.portal-brand span {
+  color: #476172;
+  font-size: 0.9rem;
+}
+
 .portal-sub {
   margin: 0 0 16px;
   color: #476172;

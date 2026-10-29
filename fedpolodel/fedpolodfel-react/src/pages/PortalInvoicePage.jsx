@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiRequest } from "../lib/api";
+import { PortalBrand } from "../components/PortalBrand";
 
 export function PortalInvoicePage() {
   const { invoiceNumber } = useParams();
@@ -59,6 +60,7 @@ export function PortalInvoicePage() {
     return (
       <div className="portal-page">
         <div className="portal-card">
+          <PortalBrand />
           <h1>Invoice</h1>
           <p className="portal-sub">Loading...</p>
         </div>
@@ -70,6 +72,7 @@ export function PortalInvoicePage() {
     return (
       <div className="portal-page">
         <div className="portal-card">
+          <PortalBrand />
           <h1>Invoice</h1>
           <div className="portal-alert">{error}</div>
           <p className="portal-link-row">
@@ -85,6 +88,7 @@ export function PortalInvoicePage() {
   return (
     <div className="portal-page">
       <div className="portal-card portal-wide">
+        <PortalBrand />
         <h1>Application Invoice</h1>
         {error ? <div className="portal-alert">{error}</div> : null}
         <table className="portal-table">

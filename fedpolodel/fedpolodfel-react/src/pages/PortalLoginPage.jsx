@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { apiRequest } from "../lib/api";
+import { PortalBrand } from "../components/PortalBrand";
 
 export function PortalLoginPage() {
   const navigate = useNavigate();
@@ -30,6 +31,7 @@ export function PortalLoginPage() {
   return (
     <div className="portal-page">
       <div className="portal-card">
+        <PortalBrand />
         <h1>Applicant Login</h1>
         <p className="portal-sub">Access your admission dashboard and payment invoice.</p>
         {error ? <div className="portal-alert">{error}</div> : null}

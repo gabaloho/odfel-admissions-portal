@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiRequest } from "../lib/api";
-
-const MODES = ["Full-Time", "Part-Time", "Distance Learning"];
+import { PortalBrand } from "../components/PortalBrand";
+import { siteConfig } from "../lib/siteConfig";
 
 export function PortalPreApplicationPage() {
   const navigate = useNavigate();
@@ -88,6 +88,7 @@ export function PortalPreApplicationPage() {
     return (
       <div className="portal-page">
         <div className="portal-card">
+          <PortalBrand />
           <h1>Pre-Application</h1>
           <p className="portal-sub">Loading...</p>
         </div>
@@ -98,6 +99,7 @@ export function PortalPreApplicationPage() {
   return (
     <div className="portal-page">
       <div className="portal-card">
+        <PortalBrand />
         <h1>Pre-Application Form</h1>
         <p className="portal-sub">Complete this step to generate your invoice.</p>
         {error ? <div className="portal-alert">{error}</div> : null}
@@ -126,7 +128,7 @@ export function PortalPreApplicationPage() {
             required
           >
             <option value="">Select Mode</option>
-            {MODES.map((mode) => (
+            {siteConfig.modesOfStudy.map((mode) => (
               <option key={mode} value={mode}>
                 {mode}
               </option>
