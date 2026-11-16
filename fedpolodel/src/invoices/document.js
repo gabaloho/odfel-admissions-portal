@@ -53,7 +53,8 @@ async function buildInvoiceDocument({ store, invoice, user, program, institution
   const isPaid = invoice.paymentStatus === "Paid";
   const doc = {
     kind: isPaid ? "receipt" : "invoice",
-    title: isPaid ? "Payment Receipt" : "Application Fee Invoice",
+    invoiceKind: invoice.invoiceKind || "application",
+    title: isPaid ? "Payment Receipt" : invoice.invoiceKind === "student_fee" ? "Student Fee Invoice" : "Application Fee Invoice",
     institutionName,
     invoiceNumber: invoice.invoiceNumber,
     receiptNumber: isPaid ? receiptNumberFor(invoice.invoiceNumber) : null,
@@ -157,7 +158,7 @@ function renderInvoicePdf(document, output) {
   if (isReceipt) rows.push(["Receipt Number", document.receiptNumber]);
   rows.push(["Invoice Number", document.invoiceNumber]);
   rows.push(["Issued", formatDateTime(document.issuedAt)]);
-  rows.push(["Applicant", document.applicantName]);
+  rows.push([document.invoiceKind === "student_fee" ? "Student" : "Applicant", document.applicantName]);
   if (document.applicantEmail) rows.push(["Email", document.applicantEmail]);
   rows.push(["Programme", document.programName]);
   rows.push(["Description", document.feeDescription]);
@@ -188,9 +189,9 @@ function renderInvoicePdf(document, output) {
   pdf.x = left;
   pdf.fillColor("#476172").font("Helvetica").fontSize(9);
   if (isReceipt) {
-    pdf.text("This receipt confirms payment of the application fee shown above. Payment status is set only by a verified payment gateway notification or by the finance office.", { width });
+    pdf.text(`This receipt confirms payment of the ${document.invoiceKind === "student_fee" ? "student" : "application"} fee shown above. Payment status is set only by a verified payment gateway notification or by the finance office.`, { width });
   } else {
-    pdf.text("Pay this invoice online from your applicant dashboard. Your invoice becomes a payment receipt once the payment is verified.", { width });
+    pdf.text(`Pay this invoice online from your ${document.invoiceKind === "student_fee" ? "student fees page" : "applicant dashboard"}. Your invoice becomes a payment receipt once the payment is verified.`, { width });
   }
   pdf.moveDown(0.5).text(`Generated ${formatDateTime(new Date().toISOString())}`, { width });
 

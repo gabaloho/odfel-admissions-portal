@@ -128,9 +128,14 @@ export function PortalDashboardPage() {
           ) : (
             <p>No pre-application found yet.</p>
           )}
-          <p className="portal-link-row">
-            <Link to="/pre-application">Update Pre-Application</Link>
-          </p>
+          {snapshot?.student ? <p>Matriculation number: <strong>{snapshot.student.matriculationNumber}</strong></p> : null}
+          {snapshot?.student ? <p className="portal-link-row"><Link to="/courses">Course Registration</Link></p> : null}
+          {snapshot?.student ? <p className="portal-link-row"><Link to="/results">Published Results</Link></p> : null}
+          {snapshot?.student ? <p className="portal-link-row"><Link to="/fees">Student Fees</Link></p> : null}
+          {snapshot?.student ? <p className="portal-link-row"><Link to="/attendance">Attendance</Link></p> : null}
+          {!snapshot?.application || snapshot.application.status === "Pending Screening" ? (
+            <p className="portal-link-row"><Link to="/pre-application">Update Pre-Application</Link></p>
+          ) : null}
         </section>
 
         <section>

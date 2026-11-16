@@ -13,6 +13,9 @@ const { createWebhookProcessor } = require("./src/payments/webhooks");
 const { createMockGateway, validateCard, PUBLIC_TEST_CARDS } = require("./src/payments/mockGateway");
 const { createPaystackClient } = require("./src/payments/paystack");
 const { buildInvoiceDocument, renderInvoicePdf } = require("./src/invoices/document");
+const { renderAcademicRecord } = require("./src/academic/record");
+const { PROGRAMME_PRESETS, validateInstitutionSettings } = require("./src/config/institution");
+const { validDecimal, validateGradingScale, gradeScore } = require("./src/config/grading");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -111,8 +114,8 @@ const mockGateway = createMockGateway({ secret: PAYMENT_WEBHOOK_SECRET, webhookP
 const paystackClient = createPaystackClient({ secretKey: PAYSTACK_SECRET_KEY });
 
 const ROLE_PERMISSIONS = {
-  super_admin: ["payments:view", "payments:write", "payments:reconcile", "admin-users:manage"],
-  finance_admin: ["payments:view", "payments:write", "payments:reconcile"],
+  super_admin: ["payments:view", "payments:write", "payments:reconcile", "admin-users:manage", "sis:manage", "student-fees:manage"],
+  finance_admin: ["payments:view", "payments:write", "payments:reconcile", "student-fees:manage"],
   auditor: ["payments:view"],
 };
 
@@ -413,10 +416,24 @@ async function validatePreApplication(body = {}) {
   if (values.modeOfStudy.length > 60 || values.previousInstitution.length > 190 || values.notes.length > 2000) {
     return { error: "One of the fields is too long." };
   }
-  if (!await store.getProgramById(values.programId)) {
+  const settings = await store.getInstitutionSettings();
+  if (!await store.getProgramById(values.programId) || (settings && !settings.programmeIds.includes(values.programId))) {
     return { error: "Selected program is invalid." };
   }
+  if (settings && !settings.modesOfStudy.includes(values.modeOfStudy)) return { error: "Selected mode of study is invalid." };
   return { values };
+}
+
+async function availablePrograms() {
+  const [programs, settings] = await Promise.all([store.listPrograms(), store.getInstitutionSettings()]);
+  return settings ? programs.filter((program) => settings.programmeIds.includes(program.id)) : programs;
+}
+
+async function applicationFee() {
+  const settings = await store.getInstitutionSettings();
+  return settings
+    ? { amount: settings.feeAmount, currency: settings.currency, feeDescription: settings.feeDescription }
+    : { amount: APPLICATION_FEE_AMOUNT, currency: APPLICATION_FEE_CURRENCY, feeDescription: APPLICATION_FEE_DESCRIPTION };
 }
 
 const OVERRIDE_STATUSES = ["Paid", "Unpaid", "Pending", "Failed"];
@@ -457,13 +474,16 @@ function publicUser(user) {
 async function loadInvoiceDocument(invoice) {
   const user = await store.getUserById(invoice.userId);
   const application = await store.getApplicationByUserId(invoice.userId);
-  const program = application ? await store.getProgramById(application.programId) : null;
+  const student = invoice.invoiceKind === "student_fee" ? await store.getStudentByUserId(invoice.userId) : null;
+  const programId = student?.programId || application?.programId;
+  const program = programId ? await store.getProgramById(programId) : null;
+  const settings = await store.getInstitutionSettings();
   const document = await buildInvoiceDocument({
     store,
     invoice,
     user,
     program,
-    institutionName: INSTITUTION_NAME,
+    institutionName: settings?.institutionName || INSTITUTION_NAME,
   });
   return { user, application, program, document };
 }
@@ -566,6 +586,267 @@ app.get("/api/health", async (req, res) => {
   return sendApiSuccess(res, { status: "up", uptimeSeconds: Math.round(process.uptime()) });
 });
 
+app.get("/api/institution", async (req, res) => {
+  const settings = await store.getInstitutionSettings();
+  return sendApiSuccess(res, { configured: Boolean(settings), settings });
+});
+
+app.get("/api/admin/institution", requireApiAdminPermission("admin-users:manage"), async (req, res) => {
+  return sendApiSuccess(res, {
+    settings: await store.getInstitutionSettings(),
+    existingPrograms: await store.listPrograms(),
+    presets: PROGRAMME_PRESETS,
+    defaults: {
+      institutionName: INSTITUTION_NAME,
+      institutionWebsite: readFrontendEnvValue(__dirname, "VITE_INSTITUTION_WEBSITE") || "",
+      institutionEmail: readFrontendEnvValue(__dirname, "VITE_INSTITUTION_EMAIL") || "",
+      institutionPhone: readFrontendEnvValue(__dirname, "VITE_INSTITUTION_PHONE") || "",
+      institutionAddress: readFrontendEnvValue(__dirname, "VITE_INSTITUTION_ADDRESS") || "",
+      institutionLogo: readFrontendEnvValue(__dirname, "VITE_INSTITUTION_LOGO") || "",
+      currency: APPLICATION_FEE_CURRENCY,
+      feeAmount: APPLICATION_FEE_AMOUNT,
+      feeDescription: APPLICATION_FEE_DESCRIPTION,
+      modesOfStudy: (readFrontendEnvValue(__dirname, "VITE_MODES_OF_STUDY") || "Full-Time,Part-Time,Distance Learning").split(",").map((mode) => mode.trim()).filter(Boolean),
+      language: "en",
+    },
+  });
+});
+
+app.post("/api/admin/institution", requireApiAdminPermission("admin-users:manage"), requireJsonBody, async (req, res) => {
+  const { values, error } = validateInstitutionSettings(req.body);
+  if (error) return sendApiError(res, 400, error);
+  const settings = await store.saveInstitutionSettings(values, {
+    actorType: "admin",
+    actorId: req.session.admin.id,
+    actorLabel: adminActorLabel(req.session.admin),
+    action: "institution_settings_updated",
+    note: "Institution settings and available programmes updated.",
+  });
+  return sendApiSuccess(res, { settings, message: "Institution settings saved." });
+});
+
+function validSisId(value) {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9_-]{0,189}$/i.test(value);
+}
+
+function sisActor(req) {
+  return { id: req.session.admin.id, label: adminActorLabel(req.session.admin) };
+}
+
+function sendSisResult(res, result, message) {
+  return result.error ? sendApiError(res, 409, result.error) : sendApiSuccess(res, { ...result, message });
+}
+
+app.get("/api/admin/sis/structure", requireApiAdminPermission("sis:manage"), async (req, res) => {
+  return sendApiSuccess(res, await store.listAcademicStructure());
+});
+
+app.post("/api/admin/sis/schools", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  if (!name || name.length > 190) return sendApiError(res, 400, "Enter a school name of up to 190 characters.");
+  return sendSisResult(res, await store.createSchool(name, sisActor(req)), "School created.");
+});
+
+app.post("/api/admin/sis/departments", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  const schoolId = req.body?.schoolId;
+  if (!name || name.length > 190 || !validSisId(schoolId)) return sendApiError(res, 400, "Enter a valid school and department name.");
+  return sendSisResult(res, await store.createDepartment(schoolId, name, sisActor(req)), "Department created.");
+});
+
+app.post("/api/admin/sis/programme-department", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const { programId, departmentId } = req.body || {};
+  if (!validSisId(programId) || !validSisId(departmentId)) return sendApiError(res, 400, "Choose a valid programme and department.");
+  return sendSisResult(res, await store.assignProgrammeDepartment(programId, departmentId, sisActor(req)), "Programme assigned.");
+});
+
+app.get("/api/admin/sis/admissions", requireApiAdminPermission("sis:manage"), async (req, res) => {
+  return sendApiSuccess(res, { applications: await store.listAdmissions() });
+});
+
+app.post("/api/admin/sis/admissions/:userId/decision", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const { decision, note } = req.body || {};
+  if (!validSisId(req.params.userId) || !["Admitted", "Rejected"].includes(decision) || typeof note !== "string" || !note.trim() || note.trim().length > 1000) return sendApiError(res, 400, "Choose a decision and enter a reason of up to 1000 characters.");
+  return sendSisResult(res, await store.decideAdmission(req.params.userId, decision, note.trim(), sisActor(req)), "Admission decision saved.");
+});
+
+app.post("/api/admin/sis/admissions/:userId/matriculate", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const value = req.body?.matriculationNumber;
+  const number = typeof value === "string" ? value.trim().toUpperCase() : "";
+  if (!validSisId(req.params.userId) || !/^[A-Z0-9][A-Z0-9/_-]{0,59}$/.test(number)) return sendApiError(res, 400, "Enter a matriculation number using letters, numbers, /, _ or - (up to 60 characters).");
+  return sendSisResult(res, await store.matriculateStudent(req.params.userId, number, sisActor(req)), "Student matriculated.");
+});
+
+app.get("/api/admin/sis/students", requireApiAdminPermission("sis:manage"), async (req, res) => {
+  return sendApiSuccess(res, { students: await store.listStudents() });
+});
+
+app.get("/api/admin/student-fees", requireApiAdminPermission("student-fees:manage"), async (req, res) => {
+  const [students, invoices, settings] = await Promise.all([store.listStudents(), store.listStudentFeesForAdmin(), store.getInstitutionSettings()]);
+  return sendApiSuccess(res, { students: students.map(({ userId, surname, otherNames, matriculationNumber }) => ({ userId, surname, otherNames, matriculationNumber })), invoices, currency: settings?.currency || APPLICATION_FEE_CURRENCY });
+});
+
+app.post("/api/admin/student-fees", requireApiAdminPermission("student-fees:manage"), requireJsonBody, async (req, res) => {
+  const { userId, requestId } = req.body || {};
+  const feeDescription = typeof req.body?.feeDescription === "string" ? req.body.feeDescription.trim() : "";
+  const currency = typeof req.body?.currency === "string" ? req.body.currency.trim().toUpperCase() : "";
+  const rawAmount = req.body?.amount;
+  if (!validSisId(userId) || !validSisId(requestId) || !feeDescription || feeDescription.length > 190 || !/^[A-Z]{3}$/.test(currency) || typeof rawAmount !== "string" || !/^\d{1,12}(?:\.\d{1,2})?$/.test(rawAmount)) {
+    return sendApiError(res, 400, "Enter a valid student, request ID, description, three-letter currency and positive amount with at most two decimal places.");
+  }
+  const [whole, fraction = ""] = rawAmount.split(".");
+  const minor = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  if (!Number.isSafeInteger(minor) || minor <= 0) return sendApiError(res, 400, "Enter a positive amount that can be processed.");
+  return sendSisResult(res, await store.createStudentFee({ userId, amount: minor / 100, feeDescription, currency, requestId }, sisActor(req)), "Student fee assigned.");
+});
+
+app.get("/api/student/fees", requireApiAuth, async (req, res) => {
+  if (!await store.getStudentByUserId(req.session.user.id)) return sendApiError(res, 403, "Only matriculated students can view student fees.");
+  return sendApiSuccess(res, { invoices: await store.listStudentFees(req.session.user.id) });
+});
+
+app.get("/api/admin/sis/courses", requireApiAdminPermission("sis:manage"), async (req, res) => {
+  return sendApiSuccess(res, await store.listCourseCatalog());
+});
+
+app.post("/api/admin/sis/terms", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const sessionName = typeof req.body?.sessionName === "string" ? req.body.sessionName.trim() : "";
+  const termName = typeof req.body?.termName === "string" ? req.body.termName.trim() : "";
+  if (!sessionName || sessionName.length > 100 || !termName || termName.length > 100) return sendApiError(res, 400, "Enter a session and term name of up to 100 characters each.");
+  return sendSisResult(res, await store.createAcademicTerm(sessionName, termName, sisActor(req)), "Academic term created.");
+});
+
+app.post("/api/admin/sis/terms/:termId/registration", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  if (!validSisId(req.params.termId) || typeof req.body?.open !== "boolean") return sendApiError(res, 400, "Choose a valid term and registration state.");
+  return sendSisResult(res, await store.setRegistrationOpen(req.params.termId, req.body.open, sisActor(req)), req.body.open ? "Registration opened." : "Registration closed.");
+});
+
+app.post("/api/admin/sis/courses", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const programId = req.body?.programId;
+  const code = typeof req.body?.code === "string" ? req.body.code.trim().toUpperCase() : "";
+  const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+  const creditUnits = req.body?.creditUnits;
+  if (!validSisId(programId) || !/^[A-Z0-9][A-Z0-9_-]{0,29}$/.test(code) || !title || title.length > 190 || !Number.isInteger(creditUnits) || creditUnits < 1 || creditUnits > 30) return sendApiError(res, 400, "Enter a programme, valid course code, title and 1 to 30 credit units.");
+  return sendSisResult(res, await store.createCourse({ programId, code, title, creditUnits }, sisActor(req)), "Course created.");
+});
+
+app.post("/api/admin/sis/offerings", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const { termId, courseId } = req.body || {};
+  if (!validSisId(termId) || !validSisId(courseId)) return sendApiError(res, 400, "Choose a valid term and course.");
+  return sendSisResult(res, await store.createCourseOffering(termId, courseId, sisActor(req)), "Course offered.");
+});
+
+app.get("/api/student/courses", requireApiAuth, async (req, res) => {
+  const courses = await store.getStudentCourses(req.session.user.id);
+  if (!courses) return sendApiError(res, 403, "Only matriculated students can view course registration.");
+  return sendApiSuccess(res, { courses });
+});
+
+app.post("/api/student/courses/:offeringId", requireApiAuth, requireJsonBody, async (req, res) => {
+  const { status } = req.body || {};
+  if (!validSisId(req.params.offeringId) || !["registered", "dropped"].includes(status)) return sendApiError(res, 400, "Choose a valid course and registration action.");
+  const actor = { label: `Student: ${req.session.user.email}` };
+  return sendSisResult(res, await store.changeCourseRegistration(req.session.user.id, req.params.offeringId, status, actor), status === "registered" ? "Course registered." : "Course dropped.");
+});
+
+app.get("/api/admin/sis/attendance", requireApiAdminPermission("sis:manage"), async (req, res) => {
+  const [catalog, meetings] = await Promise.all([store.listCourseCatalog(), store.listAttendanceMeetings()]);
+  return sendApiSuccess(res, { ...catalog, meetings });
+});
+
+app.post("/api/admin/sis/attendance/meetings", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const { offeringId, meetingDate } = req.body || {};
+  const label = typeof req.body?.label === "string" ? req.body.label.trim() : "";
+  const date = typeof meetingDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(meetingDate) ? new Date(`${meetingDate}T00:00:00.000Z`) : new Date(NaN);
+  if (!validSisId(offeringId) || !label || label.length > 100 || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== meetingDate) return sendApiError(res, 400, "Choose a course offering, valid date and meeting label of up to 100 characters.");
+  return sendSisResult(res, await store.createAttendanceMeeting(offeringId, meetingDate, label, sisActor(req)), "Meeting created.");
+});
+
+app.get("/api/admin/sis/attendance/meetings/:meetingId", requireApiAdminPermission("sis:manage"), async (req, res) => {
+  if (!validSisId(req.params.meetingId)) return sendApiError(res, 400, "Choose a valid meeting.");
+  const result = await store.getAttendanceRoster(req.params.meetingId);
+  return result ? sendApiSuccess(res, result) : sendApiError(res, 404, "Meeting not found.");
+});
+
+app.post("/api/admin/sis/attendance/meetings/:meetingId", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const { userId, status, expectedRevision } = req.body || {};
+  const statuses = ["present", "absent", "late", "excused"];
+  if (!validSisId(req.params.meetingId) || !validSisId(userId) || !statuses.includes(status) || !(expectedRevision === null || validSisId(expectedRevision))) return sendApiError(res, 400, "Choose a student, attendance status and the previously reviewed revision.");
+  return sendSisResult(res, await store.saveAttendance(req.params.meetingId, userId, status, expectedRevision, sisActor(req)), "Attendance saved.");
+});
+
+app.get("/api/student/attendance", requireApiAuth, async (req, res) => {
+  const records = await store.getStudentAttendance(req.session.user.id);
+  if (!records) return sendApiError(res, 403, "Only matriculated students can view attendance.");
+  return sendApiSuccess(res, { records });
+});
+
+app.get("/api/admin/sis/report", requireApiAdminPermission("sis:manage"), async (req, res) => {
+  return sendApiSuccess(res, { report: await store.getOperationalReport() });
+});
+
+app.get("/api/admin/sis/results", requireApiAdminPermission("sis:manage"), async (req, res) => {
+  const data = await store.listResultRoster();
+  const roster = data.roster.map((row) => {
+    const scale = data.scales.find((item) => item.programId === row.programId);
+    const draftPreview = scale && row.draftScore != null ? gradeScore(row.draftScore, scale.bands) : null;
+    return { ...row, draftPreview, activeScaleId: scale?.id || null };
+  });
+  return sendApiSuccess(res, { ...data, roster });
+});
+
+app.post("/api/admin/sis/grading-scales", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  if (!validSisId(req.body?.programId)) return sendApiError(res, 400, "Choose a valid programme.");
+  const { values, error } = validateGradingScale(req.body);
+  if (error) return sendApiError(res, 400, error);
+  return sendSisResult(res, await store.createGradingScale(req.body.programId, values.name, values.bands, sisActor(req)), "Grading scale saved.");
+});
+
+app.post("/api/admin/sis/results/draft", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const { userId, offeringId, score, reason } = req.body || {};
+  if (!validSisId(userId) || !validSisId(offeringId) || !validDecimal(score, 100) || typeof reason !== "string" || !reason.trim() || reason.trim().length > 1000) return sendApiError(res, 400, "Enter a valid score from 0 to 100 and an audit reason of up to 1000 characters.");
+  return sendSisResult(res, await store.saveResultDraft(userId, offeringId, score, reason.trim(), sisActor(req)), "Draft result saved.");
+});
+
+app.post("/api/admin/sis/results/publish", requireApiAdminPermission("sis:manage"), requireJsonBody, async (req, res) => {
+  const { userId, offeringId, draftId, scaleId } = req.body || {};
+  if (!validSisId(userId) || !validSisId(offeringId) || !validSisId(draftId) || !validSisId(scaleId)) return sendApiError(res, 400, "Review the draft and grading scale before publishing.");
+  return sendSisResult(res, await store.publishResult(userId, offeringId, draftId, scaleId, sisActor(req)), "Result published.");
+});
+
+app.get("/api/admin/sis/results/:userId/:offeringId/history", requireApiAdminPermission("sis:manage"), async (req, res) => {
+  if (!validSisId(req.params.userId) || !validSisId(req.params.offeringId)) return sendApiError(res, 400, "Choose a valid student and course.");
+  return sendApiSuccess(res, { publications: await store.getResultHistory(req.params.userId, req.params.offeringId) });
+});
+
+app.get("/api/student/results", requireApiAuth, async (req, res) => {
+  const results = await store.getStudentPublishedResults(req.session.user.id);
+  if (!results) return sendApiError(res, 403, "Only matriculated students can view results.");
+  return sendApiSuccess(res, { results });
+});
+
+app.get("/api/student/academic-record.pdf", requireApiAuth, async (req, res) => {
+  const userId = req.session.user.id;
+  const [student, user, results, settings] = await Promise.all([
+    store.getStudentByUserId(userId), store.getUserById(userId),
+    store.getStudentPublishedResults(userId), store.getInstitutionSettings(),
+  ]);
+  if (!student) return sendApiError(res, 403, "Only matriculated students can download an academic record.");
+  if (!user || !results) throw new Error("Student academic record references missing data.");
+  const program = await store.getProgramById(student.programId);
+  if (!program) throw new Error("Student academic record references a missing programme.");
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", 'attachment; filename="unofficial-academic-record.pdf"');
+  res.setHeader("Cache-Control", "private, no-store");
+  return renderAcademicRecord({
+    institutionName: settings?.institutionName || INSTITUTION_NAME,
+    studentName: `${user.surname} ${user.otherNames}`,
+    matriculationNumber: student.matriculationNumber,
+    programName: program.name,
+    results,
+  }, res);
+});
+
 app.get("/api/auth/session", async (req, res) => {
   return sendApiSuccess(res, {
     user: req.session.user || null,
@@ -634,13 +915,13 @@ app.post("/api/auth/logout", (req, res, next) => {
 
 app.get("/api/programs", requireApiAuth, async (req, res) => {
   return sendApiSuccess(res, {
-    programs: await store.listPrograms(),
+    programs: await availablePrograms(),
   });
 });
 
 app.get("/api/pre-application", requireApiAuth, async (req, res) => {
   return sendApiSuccess(res, {
-    programs: await store.listPrograms(),
+    programs: await availablePrograms(),
     previous: await store.getApplicationByUserId(req.session.user.id),
   });
 });
@@ -651,10 +932,11 @@ app.post("/api/pre-application", requireApiAuth, async (req, res) => {
     return sendApiError(res, 400, error);
   }
 
-  await store.createOrUpdateApplication({
+  const saved = await store.createOrUpdateApplication({
     userId: req.session.user.id,
     ...values,
   });
+  if (saved.error) return sendApiError(res, 409, saved.error);
 
   return sendApiSuccess(res, {
     message: "Pre-application saved successfully.",
@@ -678,9 +960,7 @@ app.post("/api/invoice/create", requireApiAuth, async (req, res) => {
 
   const invoice = await store.createInvoice({
     userId: req.session.user.id,
-    amount: APPLICATION_FEE_AMOUNT,
-    feeDescription: APPLICATION_FEE_DESCRIPTION,
-    currency: APPLICATION_FEE_CURRENCY,
+    ...await applicationFee(),
   });
 
   return sendApiSuccess(res, {
@@ -853,6 +1133,7 @@ app.get("/api/dashboard", requireApiAuth, async (req, res) => {
     snapshot: {
       ...snapshot,
       user: publicUser(snapshot.user),
+      student: await store.getStudentByUserId(req.session.user.id),
       // Applicants see their verified gateway events only (not rejected/forged
       // webhook attempts) and never the raw gateway payload.
       paymentHistory: snapshot.paymentHistory
@@ -1174,10 +1455,14 @@ app.post("/pre-application", requireAuth, async (req, res) => {
     return res.redirect("/pre-application");
   }
 
-  await store.createOrUpdateApplication({
+  const saved = await store.createOrUpdateApplication({
     userId: req.session.user.id,
     ...values,
   });
+  if (saved.error) {
+    req.session.message = saved.error;
+    return res.redirect("/dashboard");
+  }
 
   req.session.message = "Pre-application saved successfully.";
   return res.redirect("/invoice/create");
@@ -1197,9 +1482,7 @@ app.get("/invoice/create", requireAuth, async (req, res) => {
 
   const invoice = await store.createInvoice({
     userId: req.session.user.id,
-    amount: APPLICATION_FEE_AMOUNT,
-    feeDescription: APPLICATION_FEE_DESCRIPTION,
-    currency: APPLICATION_FEE_CURRENCY,
+    ...await applicationFee(),
   });
 
   req.session.message = "Invoice generated.";
@@ -1326,6 +1609,34 @@ app.post("/admin/logout", (req, res, next) => {
 });
 
 app.get("/admin/users", requireAdminPermission("admin-users:manage"), async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/admin/institution", requireAdminPermission("admin-users:manage"), async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/admin/sis", requireAdminPermission("sis:manage"), async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/admin/courses", requireAdminPermission("sis:manage"), async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/admin/results", requireAdminPermission("sis:manage"), async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/admin/student-fees", requireAdminPermission("student-fees:manage"), async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/admin/attendance", requireAdminPermission("sis:manage"), async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/admin/reports", requireAdminPermission("sis:manage"), async (req, res) => {
   return servePage(req, res);
 });
 
@@ -1487,6 +1798,22 @@ app.post("/admin/reconcile", requireAdmin, async (req, res) => {
 });
 
 app.get("/dashboard", requireAuth, async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/courses", requireAuth, async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/results", requireAuth, async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/fees", requireAuth, async (req, res) => {
+  return servePage(req, res);
+});
+
+app.get("/attendance", requireAuth, async (req, res) => {
   return servePage(req, res);
 });
 

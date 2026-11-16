@@ -138,6 +138,14 @@ body {
   font: inherit;
 }
 
+.programme-choices label {
+  display: block;
+}
+
+.programme-choices input {
+  margin: 0 6px 0 0;
+}
+
 .portal-form button,
 .portal-card button {
   border: 0;

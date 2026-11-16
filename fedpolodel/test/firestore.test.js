@@ -63,6 +63,139 @@ function sessionCall(store, method, ...args) {
   return new Promise((resolve, reject) => store[method](...args, (err, result) => err ? reject(err) : resolve(result)));
 }
 
+test("Firestore institution settings persist across adapters without deleting prior programmes", async () => {
+  const db = fakeFirestore();
+  const first = createFirestoreStore(db);
+  const second = createFirestoreStore(db);
+  await first.ensureSeed({ defaultAdminUsername: "admin", defaultAdminPassword: "AdminPass123!" });
+  const oldProgram = (await first.listPrograms())[0];
+  const audit = { actorType: "admin", actorId: "admin", action: "institution_settings_updated" };
+  const settings = { institutionName: "Example", programmeNames: [oldProgram.name, "Computer Science"], feeAmount: 0.29 };
+  const [a, b] = await Promise.all([first.saveInstitutionSettings(settings, audit), second.saveInstitutionSettings(settings, audit)]);
+  assert.deepEqual(a.programmeIds, b.programmeIds);
+  assert.equal((await second.getInstitutionSettings()).feeAmount, 0.29);
+  assert.equal(a.programmeIds[0], oldProgram.id);
+  await second.saveInstitutionSettings({ ...settings, programmeNames: ["Computer Science"] }, audit);
+  assert.ok(await first.getProgramById(oldProgram.id));
+  assert.equal((await first.listPrograms()).filter((p) => p.name === "Computer Science").length, 1);
+  assert.equal((await first.listRecentAuditLogs()).filter((log) => log.action === "institution_settings_updated").length, 3);
+});
+
+test("Firestore SIS serializes decisions and unique matriculation across instances", async () => {
+  const db = fakeFirestore();
+  const a = createFirestoreStore(db);
+  const b = createFirestoreStore(db);
+  await a.ensureSeed({ defaultAdminUsername: "admin", defaultAdminPassword: "AdminPass123!" });
+  const actor = { id: "staff", label: "Staff" };
+  const school = (await a.createSchool("Technology", actor)).school;
+  assert.ok((await b.createSchool("technology", actor)).error);
+  const department = (await a.createDepartment(school.id, "Computing", actor)).department;
+  const program = (await a.listPrograms())[0];
+  await a.assignProgrammeDepartment(program.id, department.id, actor);
+  const users = await Promise.all(["a", "b"].map((name) => a.createUser({ surname: name, otherNames: "User", email: `${name}@example.com`, phone: "1", passwordHash: "hash" })));
+  for (const user of users) {
+    await a.createOrUpdateApplication({ userId: user.id, programId: program.id, modeOfStudy: "Full-Time", previousInstitution: "School" });
+    await a.decideAdmission(user.id, "Admitted", "Verified", actor);
+  }
+  const results = await Promise.all([a.matriculateStudent(users[0].id, "TEST/1", actor), b.matriculateStudent(users[1].id, "test/1", actor)]);
+  assert.equal(results.filter((result) => result.student).length, 1);
+  assert.equal(results.filter((result) => result.error).length, 1);
+  const student = results.find((result) => result.student).student;
+  assert.equal((await b.getApplicationByUserId(student.userId)).status, "Matriculated");
+  assert.ok((await a.decideAdmission(student.userId, "Rejected", "Changed", actor)).error);
+  assert.ok((await a.createOrUpdateApplication({ userId: student.userId, programId: program.id, modeOfStudy: "Other", previousInstitution: "School" })).error);
+  assert.equal((await b.listStudents()).length, 1);
+  assert.equal((await b.listAdmissions()).length, 2);
+});
+
+test("Firestore course registration respects programme and registration window across instances", async () => {
+  const db = fakeFirestore();
+  const a = createFirestoreStore(db);
+  const b = createFirestoreStore(db);
+  await a.ensureSeed({ defaultAdminUsername: "admin", defaultAdminPassword: "AdminPass123!" });
+  const actor = { id: "staff", label: "Staff" };
+  const program = (await a.listPrograms())[0];
+  const school = (await a.createSchool("Technology", actor)).school;
+  const department = (await a.createDepartment(school.id, "Computing", actor)).department;
+  await a.assignProgrammeDepartment(program.id, department.id, actor);
+  const user = await a.createUser({ surname: "Student", otherNames: "One", email: "student-courses@example.com", phone: "1", passwordHash: "hash" });
+  await a.createOrUpdateApplication({ userId: user.id, programId: program.id, modeOfStudy: "Full-Time", previousInstitution: "School" });
+  await a.decideAdmission(user.id, "Admitted", "Verified", actor);
+  await a.matriculateStudent(user.id, "TEST/10", actor);
+  const term = (await a.createAcademicTerm("2026/2027", "First", actor)).term;
+  assert.ok((await b.createAcademicTerm("2026/2027", "first", actor)).error);
+  const course = (await a.createCourse({ programId: program.id, code: "CSC101", title: "Computing", creditUnits: 3 }, actor)).course;
+  const offering = (await a.createCourseOffering(term.id, course.id, actor)).offering;
+  const studentActor = { label: "Student" };
+  assert.ok((await b.changeCourseRegistration(user.id, offering.id, "registered", studentActor)).error);
+  await a.setRegistrationOpen(term.id, true, actor);
+  const attempts = await Promise.all([a.changeCourseRegistration(user.id, offering.id, "registered", studentActor), b.changeCourseRegistration(user.id, offering.id, "registered", studentActor)]);
+  assert.equal(attempts.filter((result) => result.status === "registered").length, 1);
+  assert.equal(attempts.filter((result) => result.error).length, 1);
+  assert.equal((await b.getStudentCourses(user.id))[0].registrationStatus, "registered");
+  const meeting = (await a.createAttendanceMeeting(offering.id, "2026-03-10", "Lecture 1", actor)).meeting;
+  assert.ok((await b.createAttendanceMeeting(offering.id, "2026-03-10", "lecture 1", actor)).error);
+  assert.ok((await b.saveAttendance(meeting.id, "unknown", "present", null, actor)).error);
+  const initialMark = await a.saveAttendance(meeting.id, user.id, "present", null, actor);
+  const updates = await Promise.all([a.saveAttendance(meeting.id, user.id, "late", initialMark.revision, actor), b.saveAttendance(meeting.id, user.id, "excused", initialMark.revision, actor)]);
+  assert.equal(updates.filter((result) => result.error).length, 1);
+  const recorded = updates.find((result) => result.status).status;
+  assert.equal((await b.getStudentAttendance(user.id))[0].status, recorded);
+  assert.equal((await b.getAttendanceRoster(meeting.id)).roster[0].status, recorded);
+  const report = await b.getOperationalReport();
+  assert.equal(report.students, 1);
+  assert.equal(report.meetings, 1);
+  assert.deepEqual(report.attendance, [{ status: recorded, count: 1 }]);
+  await b.changeCourseRegistration(user.id, offering.id, "dropped", studentActor);
+  assert.equal((await b.getAttendanceRoster(meeting.id)).roster[0].registrationStatus, "dropped");
+  assert.ok((await a.saveAttendance(meeting.id, user.id, "absent", updates.find((result) => result.revision).revision, actor)).error);
+  assert.equal((await b.getStudentAttendance(user.id))[0].status, recorded);
+  await b.changeCourseRegistration(user.id, offering.id, "registered", studentActor);
+  await a.setRegistrationOpen(term.id, false, actor);
+  assert.ok((await b.changeCourseRegistration(user.id, offering.id, "dropped", studentActor)).error);
+  assert.equal((await b.getStudentCourses(user.id))[0].registrationStatus, "registered");
+  await a.saveResultDraft(user.id, offering.id, 70, "Verified", actor);
+  assert.deepEqual(await b.getStudentPublishedResults(user.id), []);
+  const scale = (await a.createGradingScale(program.id, "Example", [{ label: "F", minimumScore: 0, gradePoints: 0 }, { label: "A", minimumScore: 70, gradePoints: 5 }], actor)).scale;
+  const row = (await b.listResultRoster()).roster[0];
+  const publications = await Promise.all([a.publishResult(user.id, offering.id, row.draftId, scale.id, actor), b.publishResult(user.id, offering.id, row.draftId, scale.id, actor)]);
+  assert.equal(publications.filter((result) => result.publication).length, 1);
+  assert.equal((await b.getStudentPublishedResults(user.id))[0].publication.grade, "A");
+  await a.saveResultDraft(user.id, offering.id, 55, "Correction", actor);
+  assert.equal((await b.getStudentPublishedResults(user.id))[0].publication.score, 70);
+  const corrected = (await b.listResultRoster()).roster[0];
+  await b.publishResult(user.id, offering.id, corrected.draftId, scale.id, actor);
+  assert.deepEqual((await a.getResultHistory(user.id, offering.id)).map((item) => item.version), [2, 1]);
+  await a.setRegistrationOpen(term.id, true, actor);
+  assert.ok((await b.changeCourseRegistration(user.id, offering.id, "dropped", studentActor)).error);
+});
+
+test("Firestore student fees are atomic, idempotent and separate from admission invoices", async () => {
+  const db = fakeFirestore();
+  const a = createFirestoreStore(db);
+  const b = createFirestoreStore(db);
+  await a.ensureSeed({ defaultAdminUsername: "admin", defaultAdminPassword: "AdminPass123!" });
+  const actor = { id: "staff", label: "Staff" };
+  const program = (await a.listPrograms())[0];
+  const school = (await a.createSchool("Technology", actor)).school;
+  const department = (await a.createDepartment(school.id, "Computing", actor)).department;
+  await a.assignProgrammeDepartment(program.id, department.id, actor);
+  const user = await a.createUser({ surname: "Student", otherNames: "One", email: "fees@example.com", phone: "1", passwordHash: "hash" });
+  await a.createOrUpdateApplication({ userId: user.id, programId: program.id, modeOfStudy: "Full-Time", previousInstitution: "School" });
+  const admission = await a.createInvoice({ userId: user.id, amount: 20, feeDescription: "Application", currency: "USD" });
+  const charge = { userId: user.id, amount: 123.45, feeDescription: "Tuition", currency: "USD", requestId: "fee-request-1" };
+  assert.ok((await a.createStudentFee(charge, actor)).error);
+  await a.decideAdmission(user.id, "Admitted", "Verified", actor);
+  await a.matriculateStudent(user.id, "FEE/1", actor);
+  const [first, retry] = await Promise.all([a.createStudentFee(charge, actor), b.createStudentFee(charge, actor)]);
+  assert.equal(first.invoice.invoiceNumber, retry.invoice.invoiceNumber);
+  assert.ok((await b.createStudentFee({ ...charge, amount: 124 }, actor)).error);
+  assert.equal((await b.listStudentFees(user.id)).length, 1);
+  assert.equal((await b.listStudentFeesForAdmin())[0].surname, "Student");
+  assert.equal((await b.getLatestInvoiceByUserId(user.id)).invoiceNumber, admission.invoiceNumber);
+  assert.equal((await b.listAuditLogsByInvoice(first.invoice.invoiceNumber)).filter((log) => log.action === "student_fee_assigned").length, 1);
+});
+
 test("production requires an explicit real Firestore configuration", () => {
   assert.throws(() => selectStore({ NODE_ENV: "production" }), /DATA_STORE=firestore/);
   assert.throws(() => selectStore({ NODE_ENV: "production", DATA_STORE: "sqlite" }), /SQLite/);

@@ -40,23 +40,26 @@ function renderInstitutionMarkup(markup) {
     ? `<p>For more information, contact your institution: ${contactItems.join(" &nbsp; ")}</p>`
     : "<p>For more information, contact your institution directly.</p>";
 
+  const tokens = {
+    __INSTITUTION_NAME_UPPER__: escapeHtml(siteConfig.institutionName.toLocaleUpperCase()),
+    __INSTITUTION_NAME__: escapedName,
+    __INSTITUTION_EMAIL__: escapedEmail,
+    __INSTITUTION_PHONE__: escapedPhone,
+    __INSTITUTION_PHONE_LINK__: phoneLink,
+    __INSTITUTION_ADDRESS__: escapedAddress,
+    __INSTITUTION_WEBSITE__: escapedWebsite,
+    __INSTITUTION_LOGO__: escapedLogo,
+    __CURRENT_YEAR__: String(new Date().getFullYear()),
+  };
   let rendered = markup
-    .replaceAll("__INSTITUTION_NAME_UPPER__", escapeHtml(siteConfig.institutionName.toLocaleUpperCase()))
-    .replaceAll("__INSTITUTION_NAME__", escapedName)
-    .replaceAll("__INSTITUTION_EMAIL__", escapedEmail)
-    .replaceAll("__INSTITUTION_PHONE__", escapedPhone)
-    .replaceAll("__INSTITUTION_PHONE_LINK__", phoneLink)
-    .replaceAll("__INSTITUTION_ADDRESS__", escapedAddress)
-    .replaceAll("__INSTITUTION_WEBSITE__", escapedWebsite)
-    .replaceAll("__INSTITUTION_LOGO__", escapedLogo)
-    .replaceAll("__CURRENT_YEAR__", String(new Date().getFullYear()))
-    .replace(/<img class="fpw-brand-image"[^>]*>/gi, escapedLogo
+    .replace(/__(?:INSTITUTION_(?:NAME_UPPER|NAME|EMAIL|PHONE_LINK|PHONE|ADDRESS|WEBSITE|LOGO)|CURRENT_YEAR)__/g, (token) => tokens[token])
+    .replace(/<img class="fpw-brand-image"[^>]*>/gi, () => escapedLogo
       ? `<img class="fpw-brand-image" src="${escapedLogo}" alt="${escapedName} logo" style="width:56px;height:auto;display:block;">`
       : "")
-    .replace(/<span class="fpw-brand-text"([^>]*)>[\s\S]*?<\/span>/gi, `<span class="fpw-brand-text"$1>${siteConfig.brandName} | ${escapedName}</span>`)
+    .replace(/<span class="fpw-brand-text"([^>]*)>[\s\S]*?<\/span>/gi, (_, attributes) => `<span class="fpw-brand-text"${attributes}>${siteConfig.brandName} | ${escapedName}</span>`)
     .replace(/<div class="gdlr-core-social-network-item[\s\S]*?<\/div>/gi, "")
-    .replace(/<div class="kingster-top-bar-left kingster-item-pdlr">[\s\S]*?<\/div>/gi, contactBar)
-    .replace(/For more information, call[\s\S]*?<\/p>/i, contactPrompt);
+    .replace(/<div class="kingster-top-bar-left kingster-item-pdlr">[\s\S]*?<\/div>/gi, () => contactBar)
+    .replace(/For more information, call[\s\S]*?<\/p>/i, () => contactPrompt);
 
   rendered = rendered
     .replace(/<a\b[^>]*href="mailto:"[^>]*>[\s\S]*?<\/a>/gi, "")

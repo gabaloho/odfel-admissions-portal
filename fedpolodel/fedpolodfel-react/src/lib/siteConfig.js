@@ -42,7 +42,7 @@ if (modesOfStudy.length === 0 || new Set(modesOfStudy).size !== modesOfStudy.len
   throw new Error("VITE_MODES_OF_STUDY must be a comma-separated list of unique study modes.");
 }
 
-export const siteConfig = Object.freeze({
+export const siteConfig = {
   brandName: "ODFel",
   institutionName: optionalValue(env.VITE_INSTITUTION_NAME) || "Your Institution",
   institutionWebsite,
@@ -51,4 +51,11 @@ export const siteConfig = Object.freeze({
   institutionAddress: optionalValue(env.VITE_INSTITUTION_ADDRESS),
   institutionLogo,
   modesOfStudy,
-});
+};
+
+export function applyInstitutionSettings(settings) {
+  if (!settings) return;
+  for (const key of ["institutionName", "institutionWebsite", "institutionEmail", "institutionPhone", "institutionAddress", "institutionLogo", "modesOfStudy"]) {
+    siteConfig[key] = settings[key];
+  }
+}

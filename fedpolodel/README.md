@@ -2,10 +2,10 @@
 
 ODFel is a reusable open and distance flexible learning admissions portal. Schools can clone it, configure their own identity and programmes, and publish their approved admission information.
 
-It is a React/Vite portal with optional Node.js/Express backend support.
+It is a React/Vite portal backed by Node.js/Express.
 
 - React frontend in `fedpolodfel-react/`
-- Optional backend entry in `app.js`
+- Backend entry in `app.js`
 - Firestore persistence for Cloud Run; SQLite in `data/app.db` for local development and tests
 - Admin and payment workflows available in backend mode
 
@@ -22,6 +22,12 @@ It is a React/Vite portal with optional Node.js/Express backend support.
 - Check status and print document pages
 - Admin login and role-based access
 - Admin user management (`/admin/users`)
+- Super-admin institution setup (`/admin/institution`) with programme presets and custom programmes
+- Initial SIS: schools, departments, programme assignments, admission decisions and matriculated student records (`/admin/sis`)
+- Academic terms, programme courses and student self-registration (`/admin/courses` and `/courses`)
+- Programme grading scales, audited result drafts and publications (`/admin/results` and `/results`)
+- Individually assigned student fees with full-invoice checkout (`/admin/student-fees` and `/fees`)
+- Course-meeting attendance and basic operational counts (`/admin/attendance`, `/attendance` and `/admin/reports`)
 - Admin payment verification console (`/admin/payments`)
 - Manual payment verification/override by admins, with an audit trail of who did what
 - Reconciliation report and CSV export
@@ -33,15 +39,59 @@ It is a React/Vite portal with optional Node.js/Express backend support.
 - `finance_admin`: payment operations access
 - `auditor`: payment view access
 
+Academic SIS administration is restricted to `super_admin`. Finance admins can assign and review student fee invoices and see the student identifiers needed for that workflow; auditors cannot assign fees.
+
 Local admin account: on a fresh local seed the backend creates an `admin` user.
 Set `ADMIN_USERNAME` and `ADMIN_PASSWORD` in your environment before the first
 start, and always do so in production. The password must satisfy the admin
 password policy (at least 10 characters with upper case, lower case, a number
 and a special character).
 
+## First-run institution setup
+
+Start the backend and frontend, then open the portal. The first-run screen directs you to sign in as a super administrator. Enter the institution's identity and contact details, application fee, currency and study modes; select programmes from the presets or add your own; then save. Settings are persisted in the configured backend database and can be changed later under **Institution Settings**. The first-run redirect is a frontend workflow, not an API access-control boundary.
+
+Existing programmes are offered for selection; removing one from admissions does not delete it or its historical applications. Existing invoices keep their original fee and currency. Configure an existing installation without deleting its data. English is the only supported operating language in this phase; Hausa, Yoruba, Igbo, French, Spanish, Portuguese, German and Swahili are not yet translated. This setup does not implement a complete student information system or institution-specific admission criteria.
+
+## Initial SIS workflow
+
+After institution setup, a super admin opens **Student Information** and creates schools and departments, then assigns each programme to a department. Review each applicant's submitted information and payment status before recording an admission or rejection decision with a reason. Payment does not automatically grant admission, and this phase does not enforce institution-specific eligibility or payment requirements. A decision can be corrected until matriculation; applicants cannot edit a decided application.
+
+Matriculation is a separate action for an admitted applicant. Staff enter a unique institution-issued matriculation number; the programme must be assigned to a department. The student record retains the programme, department and school at matriculation even if the programme is reassigned later. Matriculation and its number cannot currently be reversed or edited through the interface. Decisions and matriculation are audited; the applicant sees the application status and their own matriculation number on the dashboard.
+
+### Course registration
+
+A super admin creates an academic session/term, programme-specific courses and term offerings under **Courses**. Terms start closed; staff open or close registration manually. A matriculated student can add or drop their own programme's offered courses while the term is open, and can see their registered or dropped courses after it closes. Each change is audited. Registration does not currently depend on tuition payment.
+
+Course and term names, units and offerings cannot yet be corrected or deleted through the interface. Programme level, curriculum versions, prerequisites, credit-load limits, timetable clashes, automatic registration dates and approval workflows are not enforced. Staff must manage these manually; do not rely on this phase for production registration.
+
+### Results and grading
+
+A super admin configures an institution-approved grading scale for each programme under **Results**; no scale is preapproved or supplied by the system. Bands specify a grade label, minimum score (0 to 100), and grade points. The lowest band must begin at zero; a band applies up to, but not including, the next minimum. Staff close registration for the term before entering a score. A super admin saves a draft with a reason, reviews the score and calculated grade, and explicitly publishes it. Students can only view their own published results.
+
+A correction is a new draft and publication with a reason. The previously published result remains visible until the correction is published, and publication history and the scale used are retained. The system prevents a course with any recorded result from being dropped, even if the registration window is reopened. Publication requires the same draft and grading scale that the admin reviewed. Result entry and publishing currently both require a super admin; separate staff roles or independent approval are not yet implemented.
+
+Students can download an **unofficial** PDF academic record containing only their own published results. It is marked unofficial on every page and does not calculate GPA, determine graduation status, or provide certification.
+
+### Student fees
+
+A super admin or finance admin can assign a named fee, amount and currency to an individual matriculated student under **Student Fees**. Review existing invoices before assigning: each new assignment creates a separate charge, even if its details match another. If confirmation is interrupted, the same browser tab retains the request for a safe retry; check the invoice list before forgetting it. Students can view only their own fees and pay the full invoice through the existing hosted checkout. Admission invoices remain separate, and student fees do not gate course registration.
+
+The existing finance-office manual verification and audit workflow also applies to student invoices. Installments, automatic fee schedules, due dates, term associations, waivers, refunds and corrections are not implemented. Choose a currency supported by the configured payment provider.
+
+### Attendance and operational reports
+
+A super admin creates a course meeting with a date and label, then records each currently registered student's status as present, absent, late or excused. Different labels allow multiple meetings on the same day. Unmarked meetings are not counted as absences. Changes are audited, and a stale edit is rejected until the roster is reloaded. If a student drops a course, previously recorded attendance remains visible but cannot be edited until they register again. Students can view their own recorded statuses. Meetings cannot currently be edited or deleted; verify details before creating them.
+
+The super-admin **Reports** page shows current institution-wide counts for admissions, students, registrations, published results, meetings, recorded attendance and student-fee invoice statuses. Counts are operational summaries, not certified academic or financial reports; they do not calculate attendance percentages, revenue, GPA or graduation eligibility. Data can change while the report loads.
+
+This is a foundation, not a complete or production-ready SIS. GPA/CGPA policies, repeats, official transcripts, attendance policies, detailed staff roles, correction workflows and advanced reporting remain to be implemented. School and department editing and deletion are also not yet available. Admissions, student, fee, course, attendance and result lists currently load all records, so pagination and scale testing are required before institutional use. Firestore tests use doubles; emulator and staging validation are still required.
+
+The initial administrator and infrastructure configuration still require environment variables or a secret manager. Never enter payment keys or other secrets in institution settings. Set the public fee and currency to values supported by your payment provider, and test the complete workflow before accepting applications.
+
 ## Environment variables
 
-Copy `fedpolodfel-react/.env.example` to `fedpolodfel-react/.env` and set your institution's details before building the frontend:
+The optional frontend variables below provide legacy defaults before setup. Saved institution settings override them; they are not needed to configure a new institution:
 
 - `VITE_INSTITUTION_NAME`
 - `VITE_INSTITUTION_WEBSITE` (optional; must use HTTP or HTTPS)
@@ -51,17 +101,17 @@ Copy `fedpolodfel-react/.env.example` to `fedpolodfel-react/.env` and set your i
 - `VITE_INSTITUTION_LOGO` (optional root-relative path or HTTP/HTTPS URL)
 - `VITE_MODES_OF_STUDY` (comma-separated; defaults to full-time, part-time, and distance learning)
 
-Copy `backend.env.example` to `backend.env` (next to `app.js`) and edit it. The backend loads it on start, and variables set in the real environment override it. Set `BACKEND_ENV_FILE` to load a different file. Set `PROGRAMS_JSON` to a non-empty JSON array of objects with unique `id` and `name` values, for example:
+For local development, optionally copy `backend.env.example` to `backend.env` (next to `app.js`) and edit it. The backend loads it on start, and variables set in the real environment override it. Set `BACKEND_ENV_FILE` to load a different file. `PROGRAMS_JSON` optionally seeds an initial non-empty JSON array of objects with unique `id` and `name` values, for example:
 
 ```json
 [{"id":"undergraduate","name":"Undergraduate Programme"},{"id":"postgraduate","name":"Postgraduate Programme"}]
 ```
 
-Programs and the initial admin are seeded on the first Firestore start, or when the SQLite programs table is empty. Set these before the first backend start. Changing the environment later does not update seeded records.
+Programs and the initial admin are seeded on the first Firestore start, or when the SQLite programs table is empty. Changing the environment later does not update seeded records; manage available programmes through institution setup instead.
 
-The application fee is a flat **NGN 25,000** by default. Override it with `APPLICATION_FEE_AMOUNT`, `APPLICATION_FEE_CURRENCY` (three-letter code), and optionally `APPLICATION_FEE_DESCRIPTION`. Set the amount to `0` only when applications are free. The fee is fixed on an invoice when it is created, so changing it does not reprice existing invoices.
+The initial application fee defaults to **NGN 25,000**. `APPLICATION_FEE_AMOUNT`, `APPLICATION_FEE_CURRENCY` (three-letter code), and `APPLICATION_FEE_DESCRIPTION` supply initial defaults; saved institution settings take precedence for new invoices. A zero fee disables card checkout, but an automatic free-application completion workflow is not implemented. The fee is fixed on an invoice when it is created, so changing it does not reprice existing invoices.
 
-Set `INSTITUTION_NAME` to print your institution's name on invoice and receipt PDFs. If it is not set, the PDFs use `VITE_INSTITUTION_NAME` from the frontend `.env`.
+The saved institution name appears on newly generated invoice and receipt PDFs. Before setup, `INSTITUTION_NAME` or the frontend `.env` supplies the default.
 
 ## Payments
 
@@ -147,7 +197,7 @@ npm run dev
 
 `npm run dev` starts the Express backend on port 3000, waits until it is ready, and then starts the Vite dev server on port 5173. Ctrl+C stops both. If a backend is already running on port 3000 (for example from `npm run backend:start`), it is reused. If another program is using port 3000, run `PORT=3001 npm run dev` instead. Extra arguments go to Vite, for example `npm run dev -- --host`.
 
-The Vite dev server (and `npm run preview`) proxies `/api`, `/webhooks`, and `/admin/payments/export.csv` to the backend. The browser only talks to port 5173. If you only run Vite, without the backend, registration and login fail with "Could not reach the admissions server". To run the frontend alone against a backend somewhere else, use `npm run ui:dev` with `BACKEND_URL` set in `fedpolodfel-react/.env` or in the shell. `API_PROXY_TARGET` is also accepted as a compatibility alias.
+The Vite dev server (and `npm run preview`) proxies `/api`, `/webhooks`, and `/admin/payments/export.csv` to the backend. The browser only talks to port 5173. If the backend is unavailable, the portal displays an error instead of loading default settings. To run the frontend against a backend somewhere else, use `npm run ui:dev` with `BACKEND_URL` set in `fedpolodfel-react/.env` or in the shell. `API_PROXY_TARGET` is also accepted as a compatibility alias.
 
 The local SQLite database is created at `data/app.db` on first start. Set `DATABASE_PATH` to use a different file.
 
@@ -183,7 +233,7 @@ This phase targets a **new empty Firestore database in Native mode**; it does no
 
 - Set `DATA_STORE=firestore`, `GOOGLE_CLOUD_PROJECT` to the project ID, and `NODE_ENV=production`. Production refuses SQLite, an unset provider/project, and an emulator host.
 - Attach a dedicated Cloud Run service account with the minimum Firestore permissions (for example `roles/datastore.user` for this database) and use Application Default Credentials. Do not put service-account keys in the repository or environment files.
-- Supply `SESSION_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `PAYSTACK_SECRET_KEY`, and `PAYSTACK_WEBHOOK_SECRET` securely, e.g. Cloud Run Secret Manager references. Set `PUBLIC_BASE_URL` to the HTTPS service origin and register `/webhooks/payments` in Paystack. The initial admin is created only once; changing these values does not reset an existing admin. Set `PROGRAMS_JSON` before first startup. Startup waits for seeding and fails if Firestore is unavailable.
+- Supply `SESSION_SECRET`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `PAYSTACK_SECRET_KEY`, and `PAYSTACK_WEBHOOK_SECRET` securely, e.g. Cloud Run Secret Manager references. Set `PUBLIC_BASE_URL` to the HTTPS service origin and register `/webhooks/payments` in Paystack. The initial admin is created only once; changing these values does not reset an existing admin. Startup waits for seeding and fails if Firestore is unavailable. Complete institution setup after startup.
 - Sessions are stored in Firestore with a 24-hour expiry, shared across instances; cookies are HttpOnly, SameSite=Lax and Secure in production. Configure a Firestore TTL policy on the `sessions` collection's `expiresAt` field to clean up expired sessions; expiry is enforced even before TTL deletion.
 - Build the frontend with `npm run build` and include `fedpolodfel-react/dist` in the backend image. Cloud Run supplies `PORT`. Do not enable mock payments in production. Paystack test-mode checkout and verification are implemented, but this workspace has not been connected to a Paystack account or deployed to staging; complete real test transactions and webhook verification before accepting live payments.
 - Admin invoice/reconciliation views currently read and filter invoices in application memory and perform per-invoice lookups; plan pagination/indexing before large-scale use. Protect access to Firestore and monitor reads and costs.

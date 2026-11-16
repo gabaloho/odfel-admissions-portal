@@ -3,6 +3,8 @@ const fs = require("fs");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const { DatabaseSync } = require("node:sqlite");
+const { programmeId } = require("../config/institution");
+const { gradeScore } = require("../config/grading");
 
 const DB_PATH = process.env.DATABASE_PATH
   ? path.resolve(process.env.DATABASE_PATH)
@@ -119,6 +121,11 @@ function ensureSeed(options = {}) {
       name TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS institution_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      settings_json TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS applications (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL UNIQUE,
@@ -133,6 +140,103 @@ function ensureSeed(options = {}) {
       FOREIGN KEY (program_id) REFERENCES programs(id)
     );
 
+    CREATE TABLE IF NOT EXISTS schools (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL COLLATE NOCASE UNIQUE
+    );
+    CREATE TABLE IF NOT EXISTS departments (
+      id TEXT PRIMARY KEY,
+      school_id TEXT NOT NULL REFERENCES schools(id),
+      name TEXT NOT NULL COLLATE NOCASE,
+      UNIQUE (school_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS programme_departments (
+      program_id TEXT PRIMARY KEY REFERENCES programs(id),
+      department_id TEXT NOT NULL REFERENCES departments(id)
+    );
+    CREATE TABLE IF NOT EXISTS students (
+      user_id TEXT PRIMARY KEY REFERENCES users(id),
+      application_id TEXT NOT NULL UNIQUE,
+      matriculation_number TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      program_id TEXT NOT NULL REFERENCES programs(id),
+      department_id TEXT NOT NULL REFERENCES departments(id),
+      school_id TEXT NOT NULL REFERENCES schools(id),
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS academic_terms (
+      id TEXT PRIMARY KEY,
+      session_name TEXT NOT NULL COLLATE NOCASE,
+      term_name TEXT NOT NULL COLLATE NOCASE,
+      registration_open INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      UNIQUE (session_name, term_name)
+    );
+    CREATE TABLE IF NOT EXISTS courses (
+      id TEXT PRIMARY KEY,
+      program_id TEXT NOT NULL REFERENCES programs(id),
+      code TEXT NOT NULL COLLATE NOCASE,
+      title TEXT NOT NULL,
+      credit_units INTEGER NOT NULL,
+      UNIQUE (program_id, code)
+    );
+    CREATE TABLE IF NOT EXISTS course_offerings (
+      id TEXT PRIMARY KEY,
+      term_id TEXT NOT NULL REFERENCES academic_terms(id),
+      course_id TEXT NOT NULL REFERENCES courses(id),
+      UNIQUE (term_id, course_id)
+    );
+    CREATE TABLE IF NOT EXISTS course_registrations (
+      user_id TEXT NOT NULL REFERENCES students(user_id),
+      offering_id TEXT NOT NULL REFERENCES course_offerings(id),
+      status TEXT NOT NULL CHECK (status IN ('registered', 'dropped')),
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (user_id, offering_id)
+    );
+    CREATE TABLE IF NOT EXISTS attendance_meetings (
+      id TEXT PRIMARY KEY,
+      offering_id TEXT NOT NULL REFERENCES course_offerings(id),
+      meeting_date TEXT NOT NULL,
+      label TEXT NOT NULL COLLATE NOCASE,
+      created_at TEXT NOT NULL,
+      UNIQUE (offering_id, meeting_date, label)
+    );
+    CREATE TABLE IF NOT EXISTS attendance_records (
+      meeting_id TEXT NOT NULL REFERENCES attendance_meetings(id),
+      user_id TEXT NOT NULL REFERENCES students(user_id),
+      status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'late', 'excused')),
+      revision TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (meeting_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS grading_scales (
+      id TEXT PRIMARY KEY,
+      program_id TEXT NOT NULL REFERENCES programs(id),
+      name TEXT NOT NULL,
+      bands_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS programme_grading_scales (
+      program_id TEXT PRIMARY KEY REFERENCES programs(id),
+      scale_id TEXT NOT NULL REFERENCES grading_scales(id)
+    );
+    CREATE TABLE IF NOT EXISTS academic_results (
+      user_id TEXT NOT NULL REFERENCES students(user_id),
+      offering_id TEXT NOT NULL REFERENCES course_offerings(id),
+      draft_score REAL,
+      draft_reason TEXT,
+      draft_id TEXT,
+      draft_updated_at TEXT,
+      published_json TEXT,
+      PRIMARY KEY (user_id, offering_id)
+    );
+    CREATE TABLE IF NOT EXISTS result_publications (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES students(user_id),
+      offering_id TEXT NOT NULL REFERENCES course_offerings(id),
+      publication_json TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS invoices (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -140,6 +244,7 @@ function ensureSeed(options = {}) {
       amount REAL NOT NULL,
       fee_description TEXT NOT NULL,
       currency TEXT NOT NULL,
+      invoice_kind TEXT NOT NULL DEFAULT 'application',
       payment_status TEXT NOT NULL,
       payment_reference TEXT,
       payment_provider TEXT,
@@ -147,6 +252,11 @@ function ensureSeed(options = {}) {
       updated_at TEXT,
       created_at TEXT NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id)
+    );
+    CREATE TABLE IF NOT EXISTS student_fee_requests (
+      request_id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES students(user_id),
+      invoice_number TEXT NOT NULL REFERENCES invoices(invoice_number)
     );
 
     CREATE TABLE IF NOT EXISTS payment_transactions (
@@ -200,6 +310,13 @@ function ensureSeed(options = {}) {
   const hasPaymentProvider = invoiceCols.some((c) => c.name === "payment_provider");
   const hasPaidAt = invoiceCols.some((c) => c.name === "paid_at");
   const hasUpdatedAt = invoiceCols.some((c) => c.name === "updated_at");
+  if (!db.prepare("PRAGMA table_info(attendance_records)").all().some((c) => c.name === "revision")) {
+    db.exec("ALTER TABLE attendance_records ADD COLUMN revision TEXT");
+    db.exec("UPDATE attendance_records SET revision = lower(hex(randomblob(16))) WHERE revision IS NULL");
+  }
+  if (!invoiceCols.some((c) => c.name === "invoice_kind")) {
+    db.exec("ALTER TABLE invoices ADD COLUMN invoice_kind TEXT NOT NULL DEFAULT 'application'");
+  }
 
   if (!hasPaymentReference) {
     db.exec("ALTER TABLE invoices ADD COLUMN payment_reference TEXT");
@@ -220,6 +337,10 @@ function ensureSeed(options = {}) {
   const auditCols = db.prepare("PRAGMA table_info(payment_audit_logs)").all();
   if (!auditCols.some((c) => c.name === "actor_label")) {
     db.exec("ALTER TABLE payment_audit_logs ADD COLUMN actor_label TEXT");
+  }
+  const resultCols = db.prepare("PRAGMA table_info(academic_results)").all();
+  if (!resultCols.some((c) => c.name === "draft_id")) {
+    db.exec("ALTER TABLE academic_results ADD COLUMN draft_id TEXT");
   }
 
   const adminCols = db.prepare("PRAGMA table_info(admin_users)").all();
@@ -258,6 +379,35 @@ function ensureSeed(options = {}) {
   }
 
   ensureDefaultAdmin(defaultAdminUsername, defaultAdminPassword);
+}
+
+function getInstitutionSettings() {
+  const row = db.prepare("SELECT settings_json FROM institution_settings WHERE id = 1").get();
+  return row ? JSON.parse(row.settings_json) : null;
+}
+
+function saveInstitutionSettings(settings, auditEntry) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const existing = listPrograms();
+    const insert = db.prepare("INSERT INTO programs (id, name) VALUES (?, ?)");
+    const programmeIds = settings.programmeNames.map((name) => {
+      const current = existing.find((program) => program.name.toLowerCase() === name.toLowerCase());
+      if (current) return current.id;
+      const program = { id: programmeId(name), name };
+      insert.run(program.id, program.name);
+      existing.push(program);
+      return program.id;
+    });
+    const saved = { ...settings, programmeIds };
+    db.prepare("INSERT INTO institution_settings (id, settings_json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json").run(JSON.stringify(saved));
+    createAuditLog({ invoiceNumber: null, ...auditEntry });
+    db.exec("COMMIT");
+    return saved;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function normalizeEmail(email) {
@@ -308,6 +458,7 @@ function toInvoice(row) {
     invoiceNumber: row.invoice_number,
     amount: Number(row.amount),
     feeDescription: row.fee_description,
+    invoiceKind: row.invoice_kind || "application",
     currency: row.currency,
     paymentStatus: row.payment_status,
     paymentReference: row.payment_reference || null,
@@ -694,13 +845,14 @@ function createOrUpdateApplication({ userId, programId, modeOfStudy, previousIns
     return created;
   } else {
     const updatedAt = new Date().toISOString();
-    db.prepare(
+    const result = db.prepare(
       `
       UPDATE applications
       SET program_id = ?, mode_of_study = ?, previous_institution = ?, notes = ?, updated_at = ?
-      WHERE user_id = ?
+      WHERE user_id = ? AND status = 'Pending Screening'
     `
     ).run(programId, modeOfStudy, previousInstitution, notes, updatedAt, userId);
+    if (!result.changes) return { error: "Decided applications cannot be changed." };
 
     return {
       id: existing.id,
@@ -714,6 +866,353 @@ function createOrUpdateApplication({ userId, programId, modeOfStudy, previousIns
       updatedAt
     };
   }
+}
+
+function sisAudit(actor, action, note, metadata) {
+  createAuditLog({ invoiceNumber: null, actorType: "admin", actorId: actor.id, actorLabel: actor.label, action, note, metadata });
+}
+
+function sisTransaction(callback) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = callback();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function listAcademicStructure() {
+  return {
+    schools: db.prepare("SELECT id, name FROM schools ORDER BY name").all(),
+    departments: db.prepare("SELECT id, school_id AS schoolId, name FROM departments ORDER BY name").all(),
+    assignments: db.prepare("SELECT program_id AS programId, department_id AS departmentId FROM programme_departments").all(),
+    programs: listPrograms(),
+  };
+}
+
+function createSchool(name, actor) {
+  return sisTransaction(() => {
+    if (db.prepare("SELECT id FROM schools WHERE name = ? COLLATE NOCASE").get(name)) return { error: "School already exists." };
+    const school = { id: crypto.randomUUID(), name };
+    db.prepare("INSERT INTO schools (id, name) VALUES (?, ?)").run(school.id, name);
+    sisAudit(actor, "school_created", null, { schoolId: school.id });
+    return { school };
+  });
+}
+
+function createDepartment(schoolId, name, actor) {
+  return sisTransaction(() => {
+    if (!db.prepare("SELECT id FROM schools WHERE id = ?").get(schoolId)) return { error: "School not found." };
+    if (db.prepare("SELECT id FROM departments WHERE school_id = ? AND name = ? COLLATE NOCASE").get(schoolId, name)) return { error: "Department already exists in this school." };
+    const department = { id: crypto.randomUUID(), schoolId, name };
+    db.prepare("INSERT INTO departments (id, school_id, name) VALUES (?, ?, ?)").run(department.id, schoolId, name);
+    sisAudit(actor, "department_created", null, { departmentId: department.id, schoolId });
+    return { department };
+  });
+}
+
+function assignProgrammeDepartment(programId, departmentId, actor) {
+  return sisTransaction(() => {
+    if (!getProgramById(programId) || !db.prepare("SELECT id FROM departments WHERE id = ?").get(departmentId)) return { error: "Programme or department not found." };
+    db.prepare("INSERT INTO programme_departments (program_id, department_id) VALUES (?, ?) ON CONFLICT(program_id) DO UPDATE SET department_id = excluded.department_id").run(programId, departmentId);
+    sisAudit(actor, "programme_department_assigned", null, { programId, departmentId });
+    return { success: true };
+  });
+}
+
+function listAdmissions() {
+  return db.prepare(`
+    SELECT a.user_id AS userId, a.program_id AS programId, a.status, a.mode_of_study AS modeOfStudy,
+      a.previous_institution AS previousInstitution, a.notes, a.submitted_at AS submittedAt,
+      u.surname, u.other_names AS otherNames, u.email, p.name AS programName,
+      (SELECT i.payment_status FROM invoices i WHERE i.user_id = a.user_id AND i.invoice_kind = 'application' ORDER BY i.created_at DESC LIMIT 1) AS paymentStatus
+    FROM applications a JOIN users u ON u.id = a.user_id JOIN programs p ON p.id = a.program_id
+    ORDER BY a.submitted_at DESC
+  `).all();
+}
+
+function decideAdmission(userId, decision, note, actor) {
+  return sisTransaction(() => {
+    const application = getApplicationByUserId(userId);
+    if (!application) return { error: "Application not found." };
+    if (application.status === "Matriculated") return { error: "A matriculated application cannot be changed." };
+    if (!["Pending Screening", "Admitted", "Rejected"].includes(application.status)) return { error: "Application is not eligible for a decision." };
+    if (application.status === decision) return { error: "Application already has this decision." };
+    db.prepare("UPDATE applications SET status = ?, updated_at = ? WHERE user_id = ?").run(decision, new Date().toISOString(), userId);
+    sisAudit(actor, "admission_decision", note, { userId, applicationId: application.id, beforeStatus: application.status, afterStatus: decision });
+    return { status: decision };
+  });
+}
+
+function matriculateStudent(userId, matriculationNumber, actor) {
+  return sisTransaction(() => {
+    const application = getApplicationByUserId(userId);
+    if (!application) return { error: "Application not found." };
+    if (application.status !== "Admitted") return { error: "Only an admitted applicant can be matriculated." };
+    if (db.prepare("SELECT user_id FROM students WHERE matriculation_number = ? COLLATE NOCASE").get(matriculationNumber)) return { error: "Matriculation number is already in use." };
+    const department = db.prepare("SELECT d.id, d.school_id FROM programme_departments pd JOIN departments d ON d.id = pd.department_id WHERE pd.program_id = ?").get(application.programId);
+    if (!department) return { error: "Assign the applicant's programme to a department before matriculation." };
+    const student = { userId, applicationId: application.id, matriculationNumber, programId: application.programId, departmentId: department.id, schoolId: department.school_id, createdAt: new Date().toISOString() };
+    db.prepare("INSERT INTO students (user_id, application_id, matriculation_number, program_id, department_id, school_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(student.userId, student.applicationId, student.matriculationNumber, student.programId, student.departmentId, student.schoolId, student.createdAt);
+    db.prepare("UPDATE applications SET status = 'Matriculated', updated_at = ? WHERE user_id = ?").run(student.createdAt, userId);
+    sisAudit(actor, "student_matriculated", null, { userId, applicationId: application.id, matriculationNumber });
+    return { student };
+  });
+}
+
+function getStudentByUserId(userId) {
+  return db.prepare("SELECT user_id AS userId, application_id AS applicationId, matriculation_number AS matriculationNumber, program_id AS programId, department_id AS departmentId, school_id AS schoolId, created_at AS createdAt FROM students WHERE user_id = ?").get(userId) || null;
+}
+
+function listStudents() {
+  return db.prepare(`SELECT s.user_id AS userId, s.matriculation_number AS matriculationNumber, s.created_at AS createdAt,
+    u.surname, u.other_names AS otherNames, u.email, p.name AS programName, d.name AS departmentName, sc.name AS schoolName
+    FROM students s JOIN users u ON u.id = s.user_id JOIN programs p ON p.id = s.program_id
+    JOIN departments d ON d.id = s.department_id JOIN schools sc ON sc.id = s.school_id ORDER BY s.created_at DESC`).all();
+}
+
+function listCourseCatalog() {
+  return {
+    terms: db.prepare("SELECT id, session_name AS sessionName, term_name AS termName, registration_open AS registrationOpen, created_at AS createdAt FROM academic_terms ORDER BY created_at DESC").all().map((term) => ({ ...term, registrationOpen: Boolean(term.registrationOpen) })),
+    courses: db.prepare("SELECT id, program_id AS programId, code, title, credit_units AS creditUnits FROM courses ORDER BY code").all(),
+    offerings: db.prepare("SELECT id, term_id AS termId, course_id AS courseId FROM course_offerings").all(),
+    programs: listPrograms(),
+  };
+}
+
+function createAcademicTerm(sessionName, termName, actor) {
+  return sisTransaction(() => {
+    if (db.prepare("SELECT id FROM academic_terms WHERE session_name = ? COLLATE NOCASE AND term_name = ? COLLATE NOCASE").get(sessionName, termName)) return { error: "This term already exists in the academic session." };
+    const term = { id: crypto.randomUUID(), sessionName, termName, registrationOpen: false, createdAt: new Date().toISOString() };
+    db.prepare("INSERT INTO academic_terms (id, session_name, term_name, registration_open, created_at) VALUES (?, ?, ?, 0, ?)").run(term.id, sessionName, termName, term.createdAt);
+    sisAudit(actor, "academic_term_created", null, { termId: term.id });
+    return { term };
+  });
+}
+
+function setRegistrationOpen(termId, open, actor) {
+  return sisTransaction(() => {
+    const term = db.prepare("SELECT registration_open AS registrationOpen FROM academic_terms WHERE id = ?").get(termId);
+    if (!term) return { error: "Academic term not found." };
+    if (Boolean(term.registrationOpen) === open) return { error: "Registration is already in that state." };
+    db.prepare("UPDATE academic_terms SET registration_open = ? WHERE id = ?").run(open ? 1 : 0, termId);
+    sisAudit(actor, "registration_window_changed", null, { termId, registrationOpen: open });
+    return { success: true };
+  });
+}
+
+function createCourse(input, actor) {
+  return sisTransaction(() => {
+    if (!getProgramById(input.programId)) return { error: "Programme not found." };
+    if (db.prepare("SELECT id FROM courses WHERE program_id = ? AND code = ? COLLATE NOCASE").get(input.programId, input.code)) return { error: "Course code already exists in this programme." };
+    const course = { id: crypto.randomUUID(), ...input };
+    db.prepare("INSERT INTO courses (id, program_id, code, title, credit_units) VALUES (?, ?, ?, ?, ?)").run(course.id, course.programId, course.code, course.title, course.creditUnits);
+    sisAudit(actor, "course_created", null, { courseId: course.id, programId: course.programId });
+    return { course };
+  });
+}
+
+function createCourseOffering(termId, courseId, actor) {
+  return sisTransaction(() => {
+    if (!db.prepare("SELECT id FROM academic_terms WHERE id = ?").get(termId) || !db.prepare("SELECT id FROM courses WHERE id = ?").get(courseId)) return { error: "Term or course not found." };
+    if (db.prepare("SELECT id FROM course_offerings WHERE term_id = ? AND course_id = ?").get(termId, courseId)) return { error: "Course is already offered in this term." };
+    const offering = { id: crypto.randomUUID(), termId, courseId };
+    db.prepare("INSERT INTO course_offerings (id, term_id, course_id) VALUES (?, ?, ?)").run(offering.id, termId, courseId);
+    sisAudit(actor, "course_offered", null, { termId, courseId, offeringId: offering.id });
+    return { offering };
+  });
+}
+
+function getStudentCourses(userId) {
+  const student = getStudentByUserId(userId);
+  if (!student) return null;
+  return db.prepare(`
+    SELECT o.id AS offeringId, t.id AS termId, t.session_name AS sessionName, t.term_name AS termName,
+      t.registration_open AS registrationOpen, c.id AS courseId, c.code, c.title, c.credit_units AS creditUnits,
+      r.status AS registrationStatus, r.updated_at AS updatedAt
+    FROM course_offerings o JOIN academic_terms t ON t.id = o.term_id JOIN courses c ON c.id = o.course_id
+    LEFT JOIN course_registrations r ON r.offering_id = o.id AND r.user_id = ?
+    WHERE c.program_id = ? AND (t.registration_open = 1 OR r.status IS NOT NULL)
+    ORDER BY t.created_at DESC, c.code
+  `).all(userId, student.programId).map((row) => ({ ...row, registrationOpen: Boolean(row.registrationOpen) }));
+}
+
+function changeCourseRegistration(userId, offeringId, status, actor) {
+  return sisTransaction(() => {
+    const student = getStudentByUserId(userId);
+    if (!student) return { error: "Only matriculated students can register for courses." };
+    const offering = db.prepare(`SELECT t.registration_open AS registrationOpen, c.program_id AS programId
+      FROM course_offerings o JOIN academic_terms t ON t.id = o.term_id
+      JOIN courses c ON c.id = o.course_id WHERE o.id = ?`).get(offeringId);
+    if (!offering || offering.programId !== student.programId) return { error: "Course offering is not available for your programme." };
+    if (!offering.registrationOpen) return { error: "Course registration is closed for this term." };
+    if (status === "dropped" && db.prepare("SELECT 1 FROM academic_results WHERE user_id = ? AND offering_id = ?").get(userId, offeringId)) return { error: "A course with a recorded result cannot be dropped." };
+    const existing = db.prepare("SELECT status FROM course_registrations WHERE user_id = ? AND offering_id = ?").get(userId, offeringId);
+    if ((!existing && status === "dropped") || existing?.status === status) return { error: status === "registered" ? "Course is already registered." : "Course is not registered." };
+    const updatedAt = new Date().toISOString();
+    db.prepare("INSERT INTO course_registrations (user_id, offering_id, status, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, offering_id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at").run(userId, offeringId, status, updatedAt);
+    createAuditLog({ invoiceNumber: null, actorType: "student", actorId: userId, actorLabel: actor.label, action: "course_registration_changed", note: null, metadata: { offeringId, status } });
+    return { status, updatedAt };
+  });
+}
+
+function createAttendanceMeeting(offeringId, meetingDate, label, actor) {
+  return sisTransaction(() => {
+    if (!db.prepare("SELECT 1 FROM course_offerings WHERE id = ?").get(offeringId)) return { error: "Course offering not found." };
+    if (db.prepare("SELECT 1 FROM attendance_meetings WHERE offering_id = ? AND meeting_date = ? AND label = ? COLLATE NOCASE").get(offeringId, meetingDate, label)) return { error: "This meeting already exists for the course and date." };
+    const meeting = { id: crypto.randomUUID(), offeringId, meetingDate, label, createdAt: new Date().toISOString() };
+    db.prepare("INSERT INTO attendance_meetings (id, offering_id, meeting_date, label, created_at) VALUES (?, ?, ?, ?, ?)").run(meeting.id, offeringId, meetingDate, label, meeting.createdAt);
+    sisAudit(actor, "attendance_meeting_created", null, { meetingId: meeting.id, offeringId, meetingDate, label });
+    return { meeting };
+  });
+}
+
+function listAttendanceMeetings() {
+  return db.prepare(`SELECT m.id, m.offering_id AS offeringId, m.meeting_date AS meetingDate, m.label,
+    c.code, c.title, t.session_name AS sessionName, t.term_name AS termName
+    FROM attendance_meetings m JOIN course_offerings o ON o.id = m.offering_id JOIN courses c ON c.id = o.course_id
+    JOIN academic_terms t ON t.id = o.term_id ORDER BY m.meeting_date DESC, c.code, m.label`).all();
+}
+
+function getAttendanceRoster(meetingId) {
+  const meeting = db.prepare("SELECT id, offering_id AS offeringId, meeting_date AS meetingDate, label FROM attendance_meetings WHERE id = ?").get(meetingId);
+  if (!meeting) return null;
+  const roster = db.prepare(`SELECT s.user_id AS userId, s.matriculation_number AS matriculationNumber, u.surname, u.other_names AS otherNames,
+    r.status AS registrationStatus, a.status, a.revision, a.updated_at AS updatedAt
+    FROM course_registrations r JOIN students s ON s.user_id = r.user_id JOIN users u ON u.id = r.user_id
+    LEFT JOIN attendance_records a ON a.user_id = r.user_id AND a.meeting_id = ?
+    WHERE r.offering_id = ? AND (r.status = 'registered' OR a.status IS NOT NULL) ORDER BY u.surname, u.other_names`).all(meetingId, meeting.offeringId);
+  return { meeting, roster };
+}
+
+function saveAttendance(meetingId, userId, status, expectedRevision, actor) {
+  return sisTransaction(() => {
+    const meeting = db.prepare("SELECT offering_id AS offeringId FROM attendance_meetings WHERE id = ?").get(meetingId);
+    if (!meeting) return { error: "Meeting not found." };
+    const registration = db.prepare("SELECT status FROM course_registrations WHERE user_id = ? AND offering_id = ?").get(userId, meeting.offeringId);
+    if (registration?.status !== "registered") return { error: "Student is not currently registered for this course." };
+    const previous = db.prepare("SELECT status, revision FROM attendance_records WHERE meeting_id = ? AND user_id = ?").get(meetingId, userId);
+    if ((previous?.revision || null) !== expectedRevision) return { error: "Attendance changed. Refresh and review it before saving." };
+    const updatedAt = new Date().toISOString();
+    const revision = crypto.randomUUID();
+    db.prepare(`INSERT INTO attendance_records (meeting_id, user_id, status, revision, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(meeting_id, user_id) DO UPDATE SET status = excluded.status, revision = excluded.revision, updated_at = excluded.updated_at`).run(meetingId, userId, status, revision, updatedAt);
+    sisAudit(actor, "attendance_recorded", null, { meetingId, userId, previousStatus: previous?.status || null, status });
+    return { status, revision, updatedAt };
+  });
+}
+
+function getStudentAttendance(userId) {
+  if (!getStudentByUserId(userId)) return null;
+  return db.prepare(`SELECT m.id AS meetingId, m.meeting_date AS meetingDate, m.label, c.code, c.title,
+    t.session_name AS sessionName, t.term_name AS termName, a.status, a.updated_at AS updatedAt
+    FROM attendance_records a JOIN attendance_meetings m ON m.id = a.meeting_id JOIN course_offerings o ON o.id = m.offering_id
+    JOIN courses c ON c.id = o.course_id JOIN academic_terms t ON t.id = o.term_id WHERE a.user_id = ?
+    ORDER BY m.meeting_date DESC, c.code, m.label`).all(userId);
+}
+
+function getOperationalReport() {
+  return {
+    applications: db.prepare("SELECT status, COUNT(*) AS count FROM applications GROUP BY status ORDER BY status").all(),
+    students: db.prepare("SELECT COUNT(*) AS count FROM students").get().count,
+    registrations: db.prepare("SELECT status, COUNT(*) AS count FROM course_registrations GROUP BY status ORDER BY status").all(),
+    publishedResults: db.prepare("SELECT COUNT(*) AS count FROM academic_results WHERE published_json IS NOT NULL").get().count,
+    meetings: db.prepare("SELECT COUNT(*) AS count FROM attendance_meetings").get().count,
+    attendance: db.prepare("SELECT status, COUNT(*) AS count FROM attendance_records GROUP BY status ORDER BY status").all(),
+    studentFees: db.prepare("SELECT payment_status AS status, COUNT(*) AS count FROM invoices WHERE invoice_kind = 'student_fee' GROUP BY payment_status ORDER BY payment_status").all(),
+  };
+}
+
+function createGradingScale(programId, name, bands, actor) {
+  return sisTransaction(() => {
+    if (!getProgramById(programId)) return { error: "Programme not found." };
+    const scale = { id: crypto.randomUUID(), programId, name, bands, createdAt: new Date().toISOString() };
+    db.prepare("INSERT INTO grading_scales (id, program_id, name, bands_json, created_at) VALUES (?, ?, ?, ?, ?)").run(scale.id, programId, name, JSON.stringify(bands), scale.createdAt);
+    db.prepare("INSERT INTO programme_grading_scales (program_id, scale_id) VALUES (?, ?) ON CONFLICT(program_id) DO UPDATE SET scale_id = excluded.scale_id").run(programId, scale.id);
+    sisAudit(actor, "grading_scale_created", null, { programId, scaleId: scale.id });
+    return { scale };
+  });
+}
+
+function listResultRoster() {
+  const scales = db.prepare(`SELECT s.id, s.program_id AS programId, s.name, s.bands_json AS bandsJson, s.created_at AS createdAt
+    FROM programme_grading_scales p JOIN grading_scales s ON s.id = p.scale_id`).all()
+    .map(({ bandsJson, ...scale }) => ({ ...scale, bands: JSON.parse(bandsJson) }));
+  const roster = db.prepare(`SELECT r.user_id AS userId, r.offering_id AS offeringId, u.surname, u.other_names AS otherNames,
+    s.matriculation_number AS matriculationNumber, c.program_id AS programId, c.code, c.title, c.credit_units AS creditUnits,
+    t.session_name AS sessionName, t.term_name AS termName, t.registration_open AS registrationOpen,
+    ar.draft_score AS draftScore, ar.draft_reason AS draftReason, ar.draft_id AS draftId, ar.published_json AS publishedJson
+    FROM course_registrations r JOIN students s ON s.user_id = r.user_id JOIN users u ON u.id = r.user_id
+    JOIN course_offerings o ON o.id = r.offering_id JOIN courses c ON c.id = o.course_id
+    JOIN academic_terms t ON t.id = o.term_id LEFT JOIN academic_results ar ON ar.user_id = r.user_id AND ar.offering_id = r.offering_id
+    WHERE r.status = 'registered' ORDER BY t.created_at DESC, c.code, u.surname`).all()
+    .map(({ publishedJson, ...row }) => ({ ...row, registrationOpen: Boolean(row.registrationOpen), published: publishedJson ? JSON.parse(publishedJson) : null }));
+  return { scales, roster, programs: listPrograms() };
+}
+
+function saveResultDraft(userId, offeringId, score, reason, actor) {
+  return sisTransaction(() => {
+    const enrollment = db.prepare(`SELECT r.status, t.registration_open AS registrationOpen
+      FROM course_registrations r JOIN course_offerings o ON o.id = r.offering_id
+      JOIN academic_terms t ON t.id = o.term_id WHERE r.user_id = ? AND r.offering_id = ?`).get(userId, offeringId);
+    if (!enrollment || enrollment.status !== "registered") return { error: "Student is not registered for this course." };
+    if (enrollment.registrationOpen) return { error: "Close registration for this term before recording results." };
+    const updatedAt = new Date().toISOString();
+    db.prepare(`INSERT INTO academic_results (user_id, offering_id, draft_score, draft_reason, draft_id, draft_updated_at)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, offering_id) DO UPDATE SET draft_score = excluded.draft_score, draft_reason = excluded.draft_reason, draft_id = excluded.draft_id, draft_updated_at = excluded.draft_updated_at`).run(userId, offeringId, score, reason, crypto.randomUUID(), updatedAt);
+    sisAudit(actor, "result_draft_saved", reason, { userId, offeringId });
+    return { success: true };
+  });
+}
+
+function publishResult(userId, offeringId, expectedDraftId, expectedScaleId, actor) {
+  return sisTransaction(() => {
+    const record = db.prepare(`SELECT r.status, t.registration_open AS registrationOpen, c.program_id AS programId,
+      c.credit_units AS creditUnits, ar.draft_score AS draftScore, ar.draft_reason AS draftReason, ar.draft_id AS draftId, ar.published_json AS publishedJson
+      FROM course_registrations r JOIN course_offerings o ON o.id = r.offering_id JOIN academic_terms t ON t.id = o.term_id
+      JOIN courses c ON c.id = o.course_id LEFT JOIN academic_results ar ON ar.user_id = r.user_id AND ar.offering_id = r.offering_id
+      WHERE r.user_id = ? AND r.offering_id = ?`).get(userId, offeringId);
+    if (!record || record.status !== "registered") return { error: "Student is not registered for this course." };
+    if (record.registrationOpen) return { error: "Close registration for this term before publishing results." };
+    if (record.draftScore == null) return { error: "Save a draft score before publishing." };
+    if (record.draftId !== expectedDraftId) return { error: "The draft changed. Refresh and review it before publishing." };
+    const scale = db.prepare("SELECT s.id, s.name, s.bands_json AS bandsJson FROM programme_grading_scales p JOIN grading_scales s ON s.id = p.scale_id WHERE p.program_id = ?").get(record.programId);
+    if (!scale) return { error: "Configure a grading scale for this programme before publishing." };
+    if (scale.id !== expectedScaleId) return { error: "The grading scale changed. Refresh and review it before publishing." };
+    const band = gradeScore(record.draftScore, JSON.parse(scale.bandsJson));
+    if (!band) throw new Error("Stored grading scale does not cover the result score.");
+    const previous = record.publishedJson ? JSON.parse(record.publishedJson) : null;
+    const publication = { id: crypto.randomUUID(), version: (previous?.version || 0) + 1, score: record.draftScore, grade: band.label, gradePoints: band.gradePoints, creditUnits: record.creditUnits, scaleId: scale.id, scaleName: scale.name, reason: record.draftReason, publishedAt: new Date().toISOString() };
+    db.prepare("INSERT INTO result_publications (id, user_id, offering_id, publication_json) VALUES (?, ?, ?, ?)").run(publication.id, userId, offeringId, JSON.stringify(publication));
+    db.prepare("UPDATE academic_results SET draft_score = NULL, draft_reason = NULL, draft_id = NULL, draft_updated_at = NULL, published_json = ? WHERE user_id = ? AND offering_id = ?").run(JSON.stringify(publication), userId, offeringId);
+    sisAudit(actor, "result_published", record.draftReason, { userId, offeringId, publicationId: publication.id, version: publication.version });
+    return { publication };
+  });
+}
+
+function getStudentPublishedResults(userId) {
+  if (!getStudentByUserId(userId)) return null;
+  return db.prepare(`SELECT ar.published_json AS publishedJson, c.code, c.title,
+    t.session_name AS sessionName, t.term_name AS termName
+    FROM academic_results ar JOIN course_offerings o ON o.id = ar.offering_id JOIN courses c ON c.id = o.course_id
+    JOIN academic_terms t ON t.id = o.term_id WHERE ar.user_id = ? AND ar.published_json IS NOT NULL
+    ORDER BY t.created_at DESC, c.code`).all(userId).map(({ publishedJson, ...row }) => {
+      const { reason, ...publication } = JSON.parse(publishedJson);
+      return { ...row, publication };
+    });
+}
+
+function getResultHistory(userId, offeringId) {
+  return db.prepare("SELECT publication_json AS publicationJson FROM result_publications WHERE user_id = ? AND offering_id = ?").all(userId, offeringId)
+    .map((row) => {
+      const publication = JSON.parse(row.publicationJson);
+      const scale = db.prepare("SELECT name, bands_json AS bandsJson FROM grading_scales WHERE id = ?").get(publication.scaleId);
+      if (!scale) throw new Error("Published result references a missing grading scale.");
+      return { ...publication, scale: { name: scale.name, bands: JSON.parse(scale.bandsJson) } };
+    }).sort((a, b) => b.version - a.version);
 }
 
 function getApplicationByUserId(userId) {
@@ -740,7 +1239,7 @@ function buildUniqueInvoiceNumber() {
   throw new Error("Could not generate a unique invoice number.");
 }
 
-function createInvoice({ userId, amount, feeDescription, currency }) {
+function createInvoice({ userId, amount, feeDescription, currency, invoiceKind = "application" }) {
   const now = new Date().toISOString();
   const invoice = {
     id: crypto.randomUUID(),
@@ -748,6 +1247,7 @@ function createInvoice({ userId, amount, feeDescription, currency }) {
     invoiceNumber: buildUniqueInvoiceNumber(),
     amount,
     feeDescription,
+    invoiceKind,
     currency,
     paymentStatus: "Unpaid",
     paymentReference: null,
@@ -760,9 +1260,9 @@ function createInvoice({ userId, amount, feeDescription, currency }) {
   db.prepare(
     `
     INSERT INTO invoices (
-      id, user_id, invoice_number, amount, fee_description, currency,
+      id, user_id, invoice_number, amount, fee_description, currency, invoice_kind,
       payment_status, payment_reference, payment_provider, paid_at, updated_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
   ).run(
     invoice.id,
@@ -771,6 +1271,7 @@ function createInvoice({ userId, amount, feeDescription, currency }) {
     invoice.amount,
     invoice.feeDescription,
     invoice.currency,
+    invoice.invoiceKind,
     invoice.paymentStatus,
     invoice.paymentReference,
     invoice.paymentProvider,
@@ -780,6 +1281,34 @@ function createInvoice({ userId, amount, feeDescription, currency }) {
   );
 
   return invoice;
+}
+
+function createStudentFee({ userId, amount, feeDescription, currency, requestId }, actor) {
+  return sisTransaction(() => {
+    const previous = db.prepare("SELECT invoice_number FROM student_fee_requests WHERE request_id = ?").get(requestId);
+    if (previous) {
+      const invoice = getInvoiceByNumber(previous.invoice_number);
+      if (!invoice) throw new Error("Student fee request references a missing invoice.");
+      if (invoice.userId !== userId || invoice.amount !== amount || invoice.currency !== currency || invoice.feeDescription !== feeDescription) return { error: "Request ID was already used for a different student fee." };
+      return { invoice };
+    }
+    if (!getStudentByUserId(userId)) return { error: "Student not found." };
+    const invoice = createInvoice({ userId, amount, feeDescription, currency, invoiceKind: "student_fee" });
+    db.prepare("INSERT INTO student_fee_requests (request_id, user_id, invoice_number) VALUES (?, ?, ?)").run(requestId, userId, invoice.invoiceNumber);
+    createAuditLog({ invoiceNumber: invoice.invoiceNumber, actorType: "admin", actorId: actor.id, actorLabel: actor.label, action: "student_fee_assigned", note: feeDescription, metadata: { userId, amount, currency } });
+    return { invoice };
+  });
+}
+
+function listStudentFees(userId) {
+  return db.prepare("SELECT * FROM invoices WHERE user_id = ? AND invoice_kind = 'student_fee' ORDER BY created_at DESC").all(userId).map(toInvoice);
+}
+
+function listStudentFeesForAdmin() {
+  return db.prepare(`SELECT i.*, u.surname, u.other_names, u.email FROM invoices i JOIN users u ON u.id = i.user_id
+    WHERE i.invoice_kind = 'student_fee' ORDER BY i.created_at DESC`).all().map((row) => ({
+    ...toInvoice(row), surname: row.surname, otherNames: row.other_names, email: row.email,
+  }));
 }
 
 function createAuditLog({
@@ -999,7 +1528,7 @@ function manualOverrideInvoice({
 
 function getLatestInvoiceByUserId(userId) {
   const row = db
-    .prepare("SELECT * FROM invoices WHERE user_id = ? ORDER BY created_at DESC LIMIT 1")
+    .prepare("SELECT * FROM invoices WHERE user_id = ? AND invoice_kind = 'application' ORDER BY created_at DESC LIMIT 1")
     .get(userId);
   return toInvoice(row);
 }
@@ -1293,6 +1822,8 @@ function getDashboardByUserId(userId) {
 
 module.exports = {
   ensureSeed,
+  getInstitutionSettings,
+  saveInstitutionSettings,
   getAdminByUsername,
   getAdminById,
   listAdminUsers,
@@ -1309,7 +1840,38 @@ module.exports = {
   getProgramById,
   createOrUpdateApplication,
   getApplicationByUserId,
+  listAcademicStructure,
+  createSchool,
+  createDepartment,
+  assignProgrammeDepartment,
+  listAdmissions,
+  decideAdmission,
+  matriculateStudent,
+  getStudentByUserId,
+  listStudents,
+  listCourseCatalog,
+  createAcademicTerm,
+  setRegistrationOpen,
+  createCourse,
+  createCourseOffering,
+  getStudentCourses,
+  changeCourseRegistration,
+  createAttendanceMeeting,
+  listAttendanceMeetings,
+  getAttendanceRoster,
+  saveAttendance,
+  getStudentAttendance,
+  getOperationalReport,
+  createGradingScale,
+  listResultRoster,
+  saveResultDraft,
+  publishResult,
+  getStudentPublishedResults,
+  getResultHistory,
   createInvoice,
+  createStudentFee,
+  listStudentFees,
+  listStudentFeesForAdmin,
   createAuditLog,
   recordPaymentTransaction,
   manualOverrideInvoice,

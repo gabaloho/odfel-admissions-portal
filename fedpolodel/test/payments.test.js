@@ -6,6 +6,11 @@ const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { inflateSync } = require("node:zlib");
+const { Writable } = require("node:stream");
+const { once } = require("node:events");
+const { DatabaseSync } = require("node:sqlite");
+const { renderAcademicRecord } = require("../src/academic/record");
 
 const WEBHOOK_SECRET = "test-webhook-secret";
 const ADMIN_USERNAME = "admin";
@@ -165,7 +170,362 @@ function sign(body, secret = WEBHOOK_SECRET) {
 
 const VALID_CARD = { cardholderName: "Test Student", cardNumber: "4242 4242 4242 4242", expiry: "12/40", cvc: "123" };
 
+function pdfPageText(pdf) {
+  const contents = pdf.toString("latin1");
+  return [...contents.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)].map((match) => {
+    const stream = inflateSync(Buffer.from(match[1], "latin1")).toString("latin1");
+    return [...stream.matchAll(/<([0-9a-f]+)>/gi)].map((item) => Buffer.from(item[1], "hex").toString("latin1")).join("");
+  });
+}
+
 // ---------------------------------------------------------------------------
+
+test("unofficial record identifies every page as uncertified", async () => {
+  const chunks = [];
+  const output = new Writable({ write(chunk, encoding, callback) { chunks.push(chunk); callback(); } });
+  const completed = new Promise((resolve, reject) => { output.on("finish", resolve); output.on("error", reject); });
+  const results = Array.from({ length: 70 }, (_, index) => ({ sessionName: "Session", termName: "Term", code: `COURSE${index}`, title: "Test course", publication: { score: 60, grade: "C", gradePoints: 3, creditUnits: 2 } }));
+  renderAcademicRecord({ institutionName: "School", studentName: "Student", matriculationNumber: "TEST/1", programName: "Programme", results }, output);
+  await completed;
+  const pdf = Buffer.concat(chunks);
+  const pages = pdfPageText(pdf);
+  assert.ok(pages.length > 1);
+  assert.equal(pages.length, (pdf.toString("latin1").match(/\/Type \/Page\b/g) || []).length);
+  for (const page of pages) assert.ok(page.includes("UNOFFICIAL ACADEMIC RECORD"));
+});
+
+test("existing application invoices survive the student-fee schema migration", async () => {
+  const database = path.join(tempDir(), "legacy.db");
+  const original = await startServer({ DATABASE_PATH: database });
+  let restarted;
+  try {
+    const student = await newStudentWithInvoice(original.base);
+    original.child.kill();
+    await once(original.child, "exit");
+    const db = new DatabaseSync(database);
+    db.exec("DROP TABLE student_fee_requests; ALTER TABLE invoices DROP COLUMN invoice_kind");
+    db.close();
+    restarted = await startServer({ DATABASE_PATH: database });
+    const http = client(restarted.base);
+    assert.equal((await http("POST", "/api/auth/login", { json: { email: student.email, password: "secret123" } })).status, 200);
+    const dashboard = (await http("GET", "/api/dashboard")).body.snapshot;
+    assert.equal(dashboard.latestInvoice.invoiceNumber, student.invoiceNumber);
+    assert.equal(dashboard.latestInvoice.invoiceKind, "application");
+  } finally {
+    if (restarted) restarted.child.kill();
+    else if (original.child.exitCode === null) original.child.kill();
+  }
+});
+
+test("student fees are authorized, idempotent, isolated and paid only for the full verified amount", async () => {
+  const server = await startServer();
+  try {
+    const first = await newStudentWithInvoice(server.base);
+    const second = await newStudentWithInvoice(server.base);
+    const firstId = (await first.http("GET", "/api/dashboard")).body.snapshot.user.id;
+    const secondId = (await second.http("GET", "/api/dashboard")).body.snapshot.user.id;
+    const admin = client(server.base);
+    await admin("POST", "/api/admin/login", { json: { username: ADMIN_USERNAME, password: ADMIN_PASSWORD } });
+    const school = (await admin("POST", "/api/admin/sis/schools", { json: { name: "School" } })).body.school;
+    const department = (await admin("POST", "/api/admin/sis/departments", { json: { schoolId: school.id, name: "Computing" } })).body.department;
+    await admin("POST", "/api/admin/sis/programme-department", { json: { programId: "sample-program", departmentId: department.id } });
+    const charge = { userId: firstId, requestId: crypto.randomUUID(), feeDescription: "Tuition", amount: "123.45", currency: "USD" };
+    assert.equal((await admin("POST", "/api/admin/student-fees", { json: charge })).status, 409);
+    assert.equal((await first.http("GET", "/api/student/fees")).status, 403);
+    for (const [id, number] of [[firstId, "FEES/1"], [secondId, "FEES/2"]]) {
+      await admin("POST", `/api/admin/sis/admissions/${id}/decision`, { json: { decision: "Admitted", note: "Approved" } });
+      await admin("POST", `/api/admin/sis/admissions/${id}/matriculate`, { json: { matriculationNumber: number } });
+    }
+    assert.equal((await first.http("POST", "/api/admin/student-fees", { json: charge })).status, 401);
+    for (const amount of ["0", "-1", "1.001", "1e2", 12]) {
+      assert.equal((await admin("POST", "/api/admin/student-fees", { json: { ...charge, amount } })).status, 400);
+    }
+    const [created, retry] = await Promise.all([admin("POST", "/api/admin/student-fees", { json: charge }), admin("POST", "/api/admin/student-fees", { json: charge })]);
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const invoice = created.body.invoice;
+    assert.equal(retry.body.invoice.invoiceNumber, invoice.invoiceNumber);
+    assert.equal((await admin("POST", "/api/admin/student-fees", { json: { ...charge, amount: "125.00" } })).status, 409);
+    assert.equal((await first.http("GET", "/api/student/fees")).body.invoices.length, 1);
+    assert.equal((await second.http("GET", "/api/student/fees")).body.invoices.length, 0);
+    assert.equal((await second.http("GET", `/api/invoice/${invoice.invoiceNumber}`)).status, 404);
+    assert.equal((await first.http("GET", "/api/dashboard")).body.snapshot.latestInvoice.invoiceNumber, first.invoiceNumber);
+    assert.equal((await first.http("POST", "/api/invoice/create")).body.invoice.invoiceNumber, first.invoiceNumber);
+    assert.equal((await first.http("GET", `/api/invoice/${invoice.invoiceNumber}`)).body.document.title, "Student Fee Invoice");
+    const pdf = await first.http("GET", `/api/invoice/${invoice.invoiceNumber}/pdf`);
+    assert.ok(pdfPageText(pdf.body).join("").includes("Student Fee Invoice".toUpperCase()));
+    assert.equal((await first.http("POST", `/api/invoice/${invoice.invoiceNumber}/pay`)).status, 403);
+    for (const amountMinor of [12344, 12345]) {
+      const body = paystackBody(invoice.invoiceNumber, { amountMinor });
+      await client(server.base)("POST", "/webhooks/payments", { raw: body, headers: { "content-type": "application/json", "x-paystack-signature": sign(body) } });
+      assert.equal(await invoiceStatus(first.http, invoice.invoiceNumber), amountMinor === 12345 ? "Paid" : "Unpaid");
+    }
+    assert.equal(await invoiceStatus(first.http, first.invoiceNumber), "Unpaid");
+    const admissions = (await admin("GET", "/api/admin/sis/admissions")).body.applications;
+    assert.equal(admissions.find((application) => application.userId === firstId).paymentStatus, "Unpaid");
+    const logs = (await admin("GET", "/api/admin/payments")).body.audits.filter((entry) => entry.invoiceNumber === invoice.invoiceNumber && entry.action === "student_fee_assigned");
+    assert.equal(logs.length, 1);
+    for (const role of ["auditor", "finance_admin"]) {
+      await admin("POST", "/api/admin/users", { json: { username: `fee-${role}`, password: "TempPass123!", role } });
+      const staff = client(server.base);
+      await staff("POST", "/api/admin/login", { json: { username: `fee-${role}`, password: "TempPass123!" } });
+      await staff("POST", "/api/admin/change-password", { json: { currentPassword: "TempPass123!", newPassword: "FinalPass123!", confirmPassword: "FinalPass123!" } });
+      assert.equal((await staff("GET", "/api/admin/student-fees")).status, role === "auditor" ? 403 : 200);
+      assert.equal((await staff("POST", "/api/admin/student-fees", { json: { ...charge, requestId: crypto.randomUUID() } })).status, role === "auditor" ? 403 : 200);
+    }
+  } finally {
+    server.child.kill();
+  }
+});
+
+test("course registration is student-owned, programme-specific, and limited to open terms", async () => {
+  const server = await startServer();
+  try {
+    const first = await newStudentWithInvoice(server.base);
+    const second = await newStudentWithInvoice(server.base);
+    const firstId = (await first.http("GET", "/api/dashboard")).body.snapshot.user.id;
+    const secondId = (await second.http("GET", "/api/dashboard")).body.snapshot.user.id;
+    const admin = client(server.base);
+    await admin("POST", "/api/admin/login", { json: { username: ADMIN_USERNAME, password: ADMIN_PASSWORD } });
+    assert.equal((await second.http("GET", "/api/student/courses")).status, 403);
+    assert.equal((await second.http("GET", "/api/student/academic-record.pdf")).status, 403);
+    assert.equal((await client(server.base)("GET", "/api/student/academic-record.pdf")).status, 401);
+    assert.equal((await first.http("POST", "/api/admin/sis/terms", { json: { sessionName: "2026/2027", termName: "First" } })).status, 401);
+    const school = (await admin("POST", "/api/admin/sis/schools", { json: { name: "School" } })).body.school;
+    const department = (await admin("POST", "/api/admin/sis/departments", { json: { schoolId: school.id, name: "Computing" } })).body.department;
+    await admin("POST", "/api/admin/sis/programme-department", { json: { programId: "sample-program", departmentId: department.id } });
+    await admin("POST", `/api/admin/sis/admissions/${firstId}/decision`, { json: { decision: "Admitted", note: "Approved" } });
+    await admin("POST", `/api/admin/sis/admissions/${firstId}/matriculate`, { json: { matriculationNumber: "COURSE/1" } });
+    const term = (await admin("POST", "/api/admin/sis/terms", { json: { sessionName: "2026/2027", termName: "First" } })).body.term;
+    assert.ok(term?.id);
+    assert.equal((await admin("POST", "/api/admin/sis/terms", { json: { sessionName: "2026/2027", termName: "first" } })).status, 409);
+    assert.equal((await admin("POST", "/api/admin/sis/courses", { json: { programId: "sample-program", code: "CSC101", title: "Computing", creditUnits: 0 } })).status, 400);
+    const course = (await admin("POST", "/api/admin/sis/courses", { json: { programId: "sample-program", code: "csc101", title: "Computing", creditUnits: 3 } })).body.course;
+    assert.equal(course.code, "CSC101");
+    const offering = (await admin("POST", "/api/admin/sis/offerings", { json: { termId: term.id, courseId: course.id } })).body.offering;
+    const config = await admin("POST", "/api/admin/institution", { json: {
+      institutionName: "Example", language: "en", currency: "USD", feeAmount: 20, feeDescription: "Fee",
+      modesOfStudy: ["Full-Time"], programmeNames: ["Sample Program (configure before launch)", "Other Programme"],
+    } });
+    assert.equal(config.status, 200);
+    const otherProgram = config.body.settings.programmeIds[1];
+    const otherCourse = (await admin("POST", "/api/admin/sis/courses", { json: { programId: otherProgram, code: "OTHER1", title: "Other", creditUnits: 2 } })).body.course;
+    const otherOffering = (await admin("POST", "/api/admin/sis/offerings", { json: { termId: term.id, courseId: otherCourse.id } })).body.offering;
+    assert.equal((await admin("POST", "/api/admin/sis/offerings", { json: { termId: term.id, courseId: course.id } })).status, 409);
+    const change = (http, status) => http("POST", `/api/student/courses/${offering.id}`, { json: { status } });
+    assert.equal((await change(first.http, "registered")).status, 409);
+    assert.equal((await admin("POST", `/api/admin/sis/terms/${term.id}/registration`, { json: { open: true } })).status, 200);
+    assert.equal((await first.http("GET", "/api/student/courses")).body.courses.length, 1);
+    assert.equal((await first.http("POST", `/api/student/courses/${otherOffering.id}`, { json: { status: "registered" } })).status, 409);
+    assert.equal((await change(second.http, "registered")).status, 409);
+    assert.equal((await change(first.http, "registered")).status, 200);
+    assert.equal((await change(first.http, "registered")).status, 409);
+    const meetingInput = { offeringId: offering.id, meetingDate: "2026-03-10", label: "Lecture 1" };
+    assert.equal((await admin("POST", "/api/admin/sis/attendance/meetings", { json: { ...meetingInput, meetingDate: "2026-02-30" } })).status, 400);
+    const meeting = (await admin("POST", "/api/admin/sis/attendance/meetings", { json: meetingInput })).body.meeting;
+    assert.ok(meeting?.id);
+    assert.equal((await admin("POST", "/api/admin/sis/attendance/meetings", { json: { ...meetingInput, label: "lecture 1" } })).status, 409);
+    assert.equal((await first.http("GET", "/api/admin/sis/attendance")).status, 401);
+    assert.equal((await second.http("GET", "/api/student/attendance")).status, 403);
+    const mark = (userId, status, expectedRevision) => admin("POST", `/api/admin/sis/attendance/meetings/${meeting.id}`, { json: { userId, status, expectedRevision } });
+    assert.equal((await mark(secondId, "present", null)).status, 409);
+    const initialMark = await mark(firstId, "present", null);
+    assert.equal(initialMark.status, 200);
+    const concurrent = await Promise.all([mark(firstId, "late", initialMark.body.revision), mark(firstId, "absent", initialMark.body.revision)]);
+    assert.deepEqual(concurrent.map((r) => r.status).sort(), [200, 409]);
+    const savedAttendance = concurrent.find((r) => r.status === 200).body.status;
+    assert.equal((await first.http("GET", "/api/student/attendance")).body.records[0].status, savedAttendance);
+    const report = (await admin("GET", "/api/admin/sis/report")).body.report;
+    assert.equal(report.students, 1);
+    assert.equal(report.meetings, 1);
+    assert.deepEqual(report.attendance, [{ status: savedAttendance, count: 1 }]);
+    assert.equal((await change(first.http, "dropped")).status, 200);
+    const droppedRoster = (await admin("GET", `/api/admin/sis/attendance/meetings/${meeting.id}`)).body.roster;
+    assert.equal(droppedRoster[0].registrationStatus, "dropped");
+    assert.equal((await mark(firstId, "excused", concurrent.find((r) => r.status === 200).body.revision)).status, 409);
+    assert.equal((await first.http("GET", "/api/student/attendance")).body.records[0].status, savedAttendance);
+    assert.equal((await change(first.http, "registered")).status, 200);
+    const resultDraft = { userId: firstId, offeringId: offering.id, score: 75.25, reason: "Initial review" };
+    assert.equal((await admin("POST", "/api/admin/sis/results/draft", { json: resultDraft })).status, 409);
+    await admin("POST", `/api/admin/sis/terms/${term.id}/registration`, { json: { open: false } });
+    assert.equal((await change(first.http, "dropped")).status, 409);
+    const saved = (await first.http("GET", "/api/student/courses")).body.courses[0];
+    assert.equal(saved.registrationStatus, "registered");
+    assert.equal(saved.registrationOpen, false);
+    const logs = (await admin("GET", "/api/admin/payments")).body.audits;
+    assert.equal(logs.filter((entry) => entry.action === "course_registration_changed").length, 3);
+    assert.equal((await admin("POST", "/api/admin/sis/grading-scales", { json: { programId: "sample-program", name: "Invalid", bands: [{ label: "A", minimumScore: 50, gradePoints: 5 }] } })).status, 400);
+    assert.equal((await admin("POST", "/api/admin/sis/results/draft", { json: { ...resultDraft, score: 75.001 } })).status, 400);
+    assert.equal((await admin("POST", "/api/admin/sis/results/draft", { json: resultDraft })).status, 200);
+    assert.deepEqual((await first.http("GET", "/api/student/results")).body.results, []);
+    let row = (await admin("GET", "/api/admin/sis/results")).body.roster.find((entry) => entry.userId === firstId);
+    assert.equal(row.draftPreview, null);
+    assert.equal((await admin("POST", "/api/admin/sis/results/publish", { json: { userId: firstId, offeringId: offering.id, draftId: row.draftId, scaleId: "missing" } })).status, 409);
+    const scale = (await admin("POST", "/api/admin/sis/grading-scales", { json: { programId: "sample-program", name: "Example scale", bands: [{ label: "Fail", minimumScore: 0, gradePoints: 0 }, { label: "A", minimumScore: 70, gradePoints: 5 }] } })).body.scale;
+    row = (await admin("GET", "/api/admin/sis/results")).body.roster.find((entry) => entry.userId === firstId);
+    assert.equal(row.draftPreview.label, "A");
+    const publish = { userId: firstId, offeringId: offering.id, draftId: row.draftId, scaleId: scale.id };
+    assert.equal((await first.http("POST", "/api/admin/sis/results/publish", { json: publish })).status, 401);
+    assert.equal((await admin("POST", "/api/admin/sis/results/publish", { json: publish })).status, 200);
+    let studentResult = (await first.http("GET", "/api/student/results")).body.results[0].publication;
+    assert.equal(studentResult.score, 75.25);
+    assert.equal(studentResult.grade, "A");
+    assert.equal(studentResult.reason, undefined);
+    const record = await first.http("GET", "/api/student/academic-record.pdf");
+    assert.equal(record.status, 200);
+    assert.equal(record.body.subarray(0, 5).toString(), "%PDF-");
+    assert.equal(record.headers.get("cache-control"), "private, no-store");
+    const recordText = pdfPageText(record.body).join("");
+    assert.ok(recordText.includes("UNOFFICIAL ACADEMIC RECORD"));
+    assert.ok(recordText.includes("CSC101"));
+    assert.ok(recordText.includes("75.25"));
+    assert.ok(!recordText.includes("Initial review"));
+    await admin("POST", `/api/admin/sis/admissions/${secondId}/decision`, { json: { decision: "Admitted", note: "Approved" } });
+    await admin("POST", `/api/admin/sis/admissions/${secondId}/matriculate`, { json: { matriculationNumber: "COURSE/2" } });
+    assert.deepEqual((await second.http("GET", "/api/student/results")).body.results, []);
+    assert.equal((await second.http("GET", `/api/admin/sis/results/${firstId}/${offering.id}/history`)).status, 401);
+    assert.equal((await admin("POST", "/api/admin/sis/results/draft", { json: { ...resultDraft, score: 65, reason: "Correction" } })).status, 200);
+    assert.equal((await first.http("GET", "/api/student/results")).body.results[0].publication.score, 75.25);
+    row = (await admin("GET", "/api/admin/sis/results")).body.roster.find((entry) => entry.userId === firstId);
+    const correctedDraftId = row.draftId;
+    const newScale = (await admin("POST", "/api/admin/sis/grading-scales", { json: { programId: "sample-program", name: "Updated example", bands: [{ label: "Fail", minimumScore: 0, gradePoints: 0 }, { label: "C", minimumScore: 60, gradePoints: 3 }] } })).body.scale;
+    assert.equal((await admin("POST", "/api/admin/sis/results/publish", { json: { ...publish, draftId: correctedDraftId } })).status, 409);
+    assert.equal((await admin("POST", "/api/admin/sis/results/draft", { json: { ...resultDraft, score: 65, reason: "Confirmed correction" } })).status, 200);
+    assert.equal((await admin("POST", "/api/admin/sis/results/publish", { json: { ...publish, draftId: correctedDraftId, scaleId: newScale.id } })).status, 409);
+    row = (await admin("GET", "/api/admin/sis/results")).body.roster.find((entry) => entry.userId === firstId);
+    assert.equal((await admin("POST", "/api/admin/sis/results/publish", { json: { ...publish, draftId: row.draftId, scaleId: newScale.id } })).status, 200);
+    studentResult = (await first.http("GET", "/api/student/results")).body.results[0].publication;
+    assert.equal(studentResult.score, 65);
+    assert.equal(studentResult.grade, "C");
+    assert.equal(studentResult.version, 2);
+    const history = (await admin("GET", `/api/admin/sis/results/${firstId}/${offering.id}/history`)).body.publications;
+    assert.deepEqual(history.map((publication) => publication.scaleId), [newScale.id, scale.id]);
+    assert.equal(history[1].score, 75.25);
+    assert.equal(history[1].scale.bands[1].label, "A");
+    await admin("POST", `/api/admin/sis/terms/${term.id}/registration`, { json: { open: true } });
+    assert.equal((await change(first.http, "dropped")).status, 409);
+  } finally {
+    server.child.kill();
+  }
+});
+
+test("SIS decisions and matriculation require authorization and preserve academic history", async () => {
+  const server = await startServer();
+  try {
+    const first = await newStudentWithInvoice(server.base);
+    const second = await newStudentWithInvoice(server.base);
+    const firstId = (await first.http("GET", "/api/dashboard")).body.snapshot.user.id;
+    const secondId = (await second.http("GET", "/api/dashboard")).body.snapshot.user.id;
+    const anon = client(server.base);
+    const admin = client(server.base);
+    assert.equal((await anon("GET", "/api/admin/sis/students")).status, 401);
+    assert.equal((await first.http("GET", "/api/admin/sis/admissions")).status, 401);
+    await admin("POST", "/api/admin/login", { json: { username: ADMIN_USERNAME, password: ADMIN_PASSWORD } });
+    const admissions = (await admin("GET", "/api/admin/sis/admissions")).body.applications;
+    assert.equal(admissions.find((entry) => entry.userId === firstId).previousInstitution, "Test School");
+    assert.equal(admissions.find((entry) => entry.userId === firstId).paymentStatus, "Unpaid");
+    const school = (await admin("POST", "/api/admin/sis/schools", { json: { name: "School of Technology" } })).body.school;
+    assert.ok(school?.id);
+    assert.equal((await admin("POST", "/api/admin/sis/schools", { json: { name: "school of technology" } })).status, 409);
+    const department = (await admin("POST", "/api/admin/sis/departments", { json: { name: "Computing", schoolId: school.id } })).body.department;
+    assert.ok(department?.id);
+    assert.equal((await admin("POST", "/api/admin/sis/programme-department", { json: { programId: "sample-program", departmentId: department.id } })).status, 200);
+    assert.equal((await admin("POST", `/api/admin/sis/admissions/${firstId}/matriculate`, { json: { matriculationNumber: "POLY/001" } })).status, 409);
+    assert.equal((await admin("POST", `/api/admin/sis/admissions/${firstId}/decision`, { json: { decision: "Admitted", note: "" } })).status, 400);
+    assert.equal((await admin("POST", `/api/admin/sis/admissions/${firstId}/decision`, { json: { decision: "Admitted", note: "Requirements verified" } })).status, 200);
+    assert.equal((await first.http("POST", "/api/pre-application", { json: { programId: "sample-program", modeOfStudy: "Full-Time", previousInstitution: "Changed" } })).status, 409);
+    assert.equal((await admin("POST", `/api/admin/sis/admissions/${firstId}/matriculate`, { json: { matriculationNumber: "poly/001" } })).status, 200);
+    const snapshot = (await first.http("GET", "/api/dashboard")).body.snapshot;
+    assert.equal(snapshot.application.status, "Matriculated");
+    assert.equal(snapshot.student.matriculationNumber, "POLY/001");
+    assert.equal((await admin("POST", `/api/admin/sis/admissions/${firstId}/decision`, { json: { decision: "Rejected", note: "Changed" } })).status, 409);
+    assert.equal((await admin("POST", `/api/admin/sis/admissions/${secondId}/decision`, { json: { decision: "Admitted", note: "Verified" } })).status, 200);
+    assert.equal((await admin("POST", `/api/admin/sis/admissions/${secondId}/matriculate`, { json: { matriculationNumber: "poly/001" } })).status, 409);
+    const other = (await admin("POST", "/api/admin/sis/departments", { json: { name: "Engineering", schoolId: school.id } })).body.department;
+    await admin("POST", "/api/admin/sis/programme-department", { json: { programId: "sample-program", departmentId: other.id } });
+    const students = (await admin("GET", "/api/admin/sis/students")).body.students;
+    assert.equal(students.length, 1);
+    assert.equal(students[0].departmentName, "Computing");
+    const audits = (await admin("GET", "/api/admin/payments")).body.audits;
+    assert.ok(audits.some((log) => log.action === "admission_decision"));
+    assert.ok(audits.some((log) => log.action === "student_matriculated"));
+    assert.equal((await admin("POST", "/api/admin/users", { json: { username: "sis-auditor", password: "TempPass123!", role: "auditor" } })).status, 200);
+    const auditor = client(server.base);
+    await auditor("POST", "/api/admin/login", { json: { username: "sis-auditor", password: "TempPass123!" } });
+    await auditor("POST", "/api/admin/change-password", { json: { currentPassword: "TempPass123!", newPassword: "FinalPass123!", confirmPassword: "FinalPass123!" } });
+    assert.equal((await auditor("GET", "/api/admin/sis/students")).status, 403);
+    assert.equal((await auditor("POST", "/api/admin/sis/schools", { json: { name: "Unauthorized" } })).status, 403);
+    assert.equal((await auditor("GET", "/api/admin/sis/results")).status, 403);
+    assert.equal((await auditor("GET", "/api/admin/sis/attendance")).status, 403);
+    assert.equal((await auditor("GET", "/api/admin/sis/report")).status, 403);
+  } finally {
+    server.child.kill();
+  }
+});
+
+test("institution setup is restricted, persists programmes and fees, and preserves existing invoices", async () => {
+  const server = await startServer();
+  try {
+    const old = await newStudentWithInvoice(server.base);
+    const anonymous = client(server.base);
+    const admin = client(server.base);
+    const settings = {
+      institutionName: "Example Polytechnic", institutionWebsite: "https://example.com",
+      institutionLogo: "", institutionEmail: "office@example.com", institutionPhone: "",
+      institutionAddress: "", language: "en", currency: "USD", feeAmount: 0.29,
+      feeDescription: "Admissions", modesOfStudy: ["Evening"], programmeNames: ["Computer Science", "Custom Programme"],
+    };
+    assert.equal((await anonymous("GET", "/api/institution")).body.configured, false);
+    assert.equal((await anonymous("POST", "/api/admin/institution", { json: settings })).status, 401);
+    assert.equal((await admin("POST", "/api/admin/login", { json: { username: ADMIN_USERNAME, password: ADMIN_PASSWORD } })).status, 200);
+    for (const invalid of [
+      { ...settings, feeAmount: 1.001 },
+      { ...settings, institutionWebsite: "javascript:alert(1)" },
+      { ...settings, institutionLogo: "/\\evil.example/logo.png" },
+      { ...settings, language: "fr" },
+      { ...settings, programmeNames: ["Computer Science", "computer science"] },
+    ]) {
+      assert.equal((await admin("POST", "/api/admin/institution", { json: invalid })).status, 400);
+    }
+    settings.institutionLogo = "/logo.png";
+    let response = await admin("POST", "/api/admin/institution", { json: settings });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    const selected = response.body.settings.programmeIds;
+    assert.equal(selected.length, 2);
+    assert.equal((await anonymous("GET", "/api/institution")).body.settings.institutionName, "Example Polytechnic");
+    assert.equal((await anonymous("GET", "/api/institution")).body.settings.institutionLogo, "/logo.png");
+    const oldInvoice = await old.http("GET", `/api/invoice/${old.invoiceNumber}`);
+    assert.equal(oldInvoice.body.invoice.amount, 20);
+    assert.equal(oldInvoice.body.program.id, "sample-program");
+
+    const student = client(server.base);
+    assert.equal((await student("POST", "/api/auth/register", { json: { surname: "New", otherNames: "Applicant", email: "new@example.com", phone: "1", password: "secret123" } })).status, 200);
+    response = await student("GET", "/api/programs");
+    assert.deepEqual(response.body.programs.map((p) => p.name).sort(), settings.programmeNames.slice().sort());
+    const application = { programId: selected[0], modeOfStudy: "Evening", previousInstitution: "School" };
+    assert.equal((await student("POST", "/api/pre-application", { json: { ...application, programId: "sample-program" } })).status, 400);
+    assert.equal((await student("POST", "/api/pre-application", { json: { ...application, modeOfStudy: "Full-Time" } })).status, 400);
+    assert.equal((await student("POST", "/api/pre-application", { json: application })).status, 200);
+    response = await student("POST", "/api/invoice/create");
+    assert.equal(response.body.invoice.amount, 0.29);
+    assert.equal(response.body.invoice.feeDescription, "Admissions");
+
+    response = await admin("POST", "/api/admin/institution", { json: { ...settings, programmeNames: ["Custom Programme"], feeAmount: 30 } });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal((await student("GET", "/api/programs")).body.programs.length, 1);
+    assert.equal((await student("POST", "/api/invoice/create")).body.invoice.amount, 0.29);
+    assert.equal((await old.http("GET", `/api/invoice/${old.invoiceNumber}`)).body.invoice.amount, 20);
+    assert.ok((await admin("GET", "/api/admin/payments")).body.audits.some((log) => log.action === "institution_settings_updated"));
+
+    assert.equal((await admin("POST", "/api/admin/users", { json: { username: "auditor-setup", password: "TempPass123!", role: "auditor" } })).status, 200);
+    const auditor = client(server.base);
+    await auditor("POST", "/api/admin/login", { json: { username: "auditor-setup", password: "TempPass123!" } });
+    await auditor("POST", "/api/admin/change-password", { json: { currentPassword: "TempPass123!", newPassword: "FinalPass123!", confirmPassword: "FinalPass123!" } });
+    assert.equal((await auditor("GET", "/api/admin/institution")).status, 403);
+    assert.equal((await auditor("POST", "/api/admin/institution", { json: settings })).status, 403);
+  } finally {
+    server.child.kill();
+  }
+});
 
 test("configured application fee is a flat USD 20", async () => {
   const { http, invoiceNumber } = await newStudentWithInvoice();

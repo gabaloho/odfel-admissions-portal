@@ -17,7 +17,7 @@ function buildShareText(doc) {
     `Payment receipt ${doc.receiptNumber}`,
     doc.institutionName,
     `${doc.feeDescription}: ${doc.amountFormatted} paid`,
-    `Applicant: ${doc.applicantName}`,
+    `${doc.invoiceKind === "student_fee" ? "Student" : "Applicant"}: ${doc.applicantName}`,
     `Paid on: ${formatDateTime(doc.payment?.paidAt)}`,
     `Reference: ${doc.payment?.reference || "-"}`,
     `Confirmed by: ${doc.payment?.confirmedBy || "-"}`,
@@ -233,7 +233,7 @@ export function PortalInvoicePage() {
               <td>{doc?.invoiceNumber}</td>
             </tr>
             <tr>
-              <th>Applicant</th>
+              <th>{doc?.invoiceKind === "student_fee" ? "Student" : "Applicant"}</th>
               <td>{doc?.applicantName}</td>
             </tr>
             <tr>
@@ -422,7 +422,7 @@ export function PortalInvoicePage() {
         ) : null}
 
         <p className="portal-link-row">
-          <Link to="/dashboard">Back to Dashboard</Link>
+          <Link to={doc?.invoiceKind === "student_fee" ? "/fees" : "/dashboard"}>{doc?.invoiceKind === "student_fee" ? "Back to Student Fees" : "Back to Dashboard"}</Link>
         </p>
       </div>
 
