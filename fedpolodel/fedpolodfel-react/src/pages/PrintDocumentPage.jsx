@@ -133,10 +133,10 @@ const html = String.raw`
                                                                 </div>
                                                                                                                             
                                                                 <div class="quform-element">
-                                                                    <p>Application Number
+                                                                    <p>Email Address
                                                                         <br>
                                                                         <span class="wpcf7-form-control-wrap your-name">
-                                                                            <input id="username" type="text" name="txtusername" size="40" class="input1" required="">
+                                                                            <input id="email" type="email" name="email" autocomplete="email" size="40" class="input1" required="">
                                                                         </span> 
                                                                     </p>
                                                                 </div>
@@ -147,7 +147,7 @@ const html = String.raw`
                                                                     <p>Password
                                                                         <br>
                                                                         <span class="wpcf7-form-control-wrap your-name">
-                                                                            <input id="password" type="password" name="txtpassword" size="40" class="input1" required="">
+                                                                            <input id="password" type="password" name="password" autocomplete="current-password" size="40" class="input1" required="">
                                                                         </span> 
                                                                     </p>
                                                                 </div>
@@ -233,6 +233,7 @@ export function PrintDocumentPage() {
       title={"ODFel Admissions Portal"}
       bodyClassName={"home page-template-default page page-id-2039 gdlr-core-body woocommerce-no-js tribe-no-js kingster-body kingster-body-front kingster-full  kingster-with-sticky-navigation  kingster-blockquote-style-1 gdlr-core-link-to-lightbox"}
       html={html}
+      signInIntent="print"
     />
   );
 }

@@ -1,5 +1,7 @@
 import React, { useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { siteConfig } from "../lib/siteConfig";
+import { signInAndGetDestination } from "../lib/portalSignIn";
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (character) => {
@@ -63,8 +65,51 @@ function renderInstitutionMarkup(markup) {
   return rendered;
 }
 
-export function LegacyMarkupPage({ title, bodyClassName, html }) {
+function showFormMessage(form, message) {
+  let box = form.querySelector(".fpw-form-message");
+  if (!box) {
+    box = document.createElement("div");
+    box.className = "fpw-form-message";
+    box.setAttribute("role", "alert");
+    form.insertBefore(box, form.firstChild);
+  }
+  box.textContent = message;
+  box.hidden = !message;
+}
+
+/**
+ * signInIntent: when set ("status" | "continue" | "print"), the page's sign-in
+ * form (email + password) logs the applicant in through the portal API and
+ * continues to the matching portal page instead of posting to the server.
+ */
+export function LegacyMarkupPage({ title, bodyClassName, html, signInIntent }) {
   const renderedHtml = renderInstitutionMarkup(html);
+  const navigate = useNavigate();
+
+  async function handleSubmit(event) {
+    if (!signInIntent) return;
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    event.preventDefault();
+
+    const email = String(form.elements.email?.value || "").trim();
+    const password = String(form.elements.password?.value || "");
+    const button = form.querySelector("button[type=submit]");
+    showFormMessage(form, "");
+    if (button) button.disabled = true;
+
+    try {
+      navigate(await signInAndGetDestination({ email, password }, signInIntent));
+    } catch (err) {
+      showFormMessage(
+        form,
+        err.status === 401
+          ? "Invalid email or password. Use the email address and password you registered with."
+          : err.message || "Sign-in failed. Please try again."
+      );
+      if (button) button.disabled = false;
+    }
+  }
 
   useEffect(() => {
     const footer = document.querySelector("footer");
@@ -212,5 +257,5 @@ export function LegacyMarkupPage({ title, bodyClassName, html }) {
     };
   }, [title, bodyClassName]);
 
-  return <div dangerouslySetInnerHTML={{ __html: renderedHtml }} />;
+  return <div onSubmit={handleSubmit} dangerouslySetInnerHTML={{ __html: renderedHtml }} />;
 }

@@ -1,0 +1,21 @@
+# dependencies and build output
+node_modules/
+fedpolodel/node_modules/
+fedpolodel/fedpolodfel-react/node_modules/
+fedpolodel/fedpolodfel-react/dist/
+
+# local databases (contain applicant data)
+fedpolodel/data/
+
+# environment files (keep the *.example templates)
+.env
+.env.*
+!.env.example
+!*.env.example
+fedpolodel/.env
+fedpolodel/backend.env
+
+# logs and tooling
+*.log
+.vercel/
+.DS_Store

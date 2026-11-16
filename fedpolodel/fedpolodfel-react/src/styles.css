@@ -189,11 +189,19 @@ body {
 }
 
 .portal-inline-grid {
-  display: grid;
-  grid-template-columns: 120px 1fr 100px 1.5fr auto auto auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   margin-top: 8px;
+}
+
+.portal-inline-grid input {
+  flex: 1 1 200px;
+}
+
+.portal-inline-grid button {
+  white-space: nowrap;
 }
 
 .portal-link-btn {
@@ -216,8 +224,237 @@ body {
   min-width: 220px;
 }
 
-@media (max-width: 980px) {
-  .portal-inline-grid {
-    grid-template-columns: 1fr;
+
+
+/* Invoice / payment receipt */
+.invoice-card {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Translucent stamp laid across the whole receipt, above the table (the legacy
+   theme gives table cells opaque backgrounds) but ignoring clicks. */
+.paid-stamp {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 34px 6px 22px;
+  border: 8px solid rgba(31, 138, 59, 0.45);
+  border-radius: 22px;
+  color: rgba(31, 138, 59, 0.45);
+  font-size: clamp(2.6rem, 10vw, 7rem);
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  transform: translate(-50%, -50%) rotate(-24deg);
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  mix-blend-mode: multiply;
+}
+
+.paid-stamp i {
+  font-size: 1.1em;
+  -webkit-text-stroke: 2px rgba(31, 138, 59, 0.45);
+}
+
+.invoice-paid-banner i,
+.status-paid i {
+  margin-right: 4px;
+}
+
+.status-paid {
+  color: #1f6a2a;
+  font-weight: 700;
+}
+
+.invoice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.invoice-actions i {
+  margin-right: 6px;
+}
+
+.checkout-form {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #dde4ea;
+  border-radius: 12px;
+  background: #fbfcfd;
+}
+
+.checkout-form h2 {
+  margin-top: 0;
+}
+
+.checkout-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.checkout-row > div {
+  display: grid;
+  gap: 8px;
+}
+
+.checkout-test-note {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff8e6;
+  border: 1px solid #f0d58c;
+  color: #5c4700;
+  font-size: 0.92rem;
+}
+
+.checkout-test-note ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+/* Sign-in errors inside the legacy (public site) forms */
+.fpw-form-message {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #f1b1b1;
+  background: #fff2f2;
+  color: #8e1e1e;
+  font-size: 14px;
+}
+
+/* Share receipt dialog */
+.share-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(10, 22, 32, 0.55);
+  font-family: "Segoe UI", Tahoma, sans-serif;
+}
+
+.share-dialog {
+  width: min(480px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 20px;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 20px 50px rgba(10, 22, 32, 0.3);
+}
+
+.share-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.share-dialog h2 {
+  margin: 0;
+  color: #0d2a3a;
+  font-size: 1.3rem;
+}
+
+.share-close {
+  border: 0;
+  background: transparent;
+  color: #476172;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 6px;
+}
+
+.share-preview {
+  margin: 14px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f4f7f9;
+  color: #14334a;
+  font-size: 0.9rem;
+  white-space: pre-line;
+  user-select: all;
+}
+
+.share-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.share-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 8px;
+  border: 1px solid #dde4ea;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #14334a;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.share-option:hover,
+.share-option:focus-visible {
+  border-color: #0d4d73;
+  background: #f4f9fc;
+}
+
+.share-option i {
+  font-size: 1.6rem;
+}
+
+.share-whatsapp i {
+  color: #25d366;
+}
+
+.share-email i {
+  color: #0d4d73;
+}
+
+.share-sms i {
+  color: #6a4cc2;
+}
+
+.share-download i {
+  color: #c0392b;
+}
+
+.share-feedback {
+  margin: 12px 0 0;
+  color: #1f6a2a;
+  font-weight: 600;
+}
+
+.share-hint {
+  margin: 12px 0 0;
+  color: #6a7d8b;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 560px) {
+  .share-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .share-dialog {
+    border-radius: 16px 16px 0 0;
   }
 }

@@ -84,6 +84,9 @@ export function PortalRegisterPage() {
           <input
             id="password"
             type="password"
+            minLength={8}
+            autoComplete="new-password"
+            placeholder="At least 8 characters"
             value={form.password}
             onChange={(e) => updateField("password", e.target.value)}
             required

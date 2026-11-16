@@ -3,6 +3,20 @@ import { Link, useNavigate } from "react-router-dom";
 import { apiRequest } from "../lib/api";
 import { PortalBrand } from "../components/PortalBrand";
 
+function formatDateTime(iso) {
+  if (!iso) return "-";
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
+}
+
+function formatMoney(amount, currency) {
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(Number(amount || 0));
+  } catch {
+    return `${currency} ${Number(amount || 0).toFixed(2)}`;
+  }
+}
+
 export function PortalDashboardPage() {
   const navigate = useNavigate();
   const [snapshot, setSnapshot] = useState(null);
@@ -130,18 +144,30 @@ export function PortalDashboardPage() {
                 </tr>
                 <tr>
                   <th>Amount</th>
-                  <td>
-                    {latestInvoice.currency} {Number(latestInvoice.amount).toLocaleString()}
-                  </td>
+                  <td>{formatMoney(latestInvoice.amount, latestInvoice.currency)}</td>
                 </tr>
                 <tr>
                   <th>Status</th>
-                  <td>{latestInvoice.paymentStatus}</td>
+                  <td>
+                    {latestInvoice.paymentStatus === "Paid" ? (
+                      <span className="status-paid">
+                        <i className="bi bi-check-circle-fill" aria-hidden="true" /> Paid
+                      </span>
+                    ) : (
+                      latestInvoice.paymentStatus
+                    )}
+                  </td>
                 </tr>
-                {latestInvoice.paymentReference ? (
+                {latestInvoice.paymentStatus === "Paid" && latestInvoice.paymentReference ? (
                   <tr>
                     <th>Reference</th>
                     <td>{latestInvoice.paymentReference}</td>
+                  </tr>
+                ) : null}
+                {latestInvoice.paymentStatus === "Paid" && latestInvoice.paidAt ? (
+                  <tr>
+                    <th>Paid On</th>
+                    <td>{formatDateTime(latestInvoice.paidAt)}</td>
                   </tr>
                 ) : null}
               </tbody>
@@ -152,7 +178,9 @@ export function PortalDashboardPage() {
 
           {latestInvoice ? (
             <p className="portal-link-row">
-              <Link to={`/invoice/${latestInvoice.invoiceNumber}`}>Open Invoice</Link>
+              <Link to={`/invoice/${latestInvoice.invoiceNumber}`}>
+                {latestInvoice.paymentStatus === "Paid" ? "View Payment Receipt" : "Open Invoice & Pay"}
+              </Link>
             </p>
           ) : (
             <p className="portal-link-row">
@@ -170,18 +198,18 @@ export function PortalDashboardPage() {
                   <th>Time</th>
                   <th>Provider</th>
                   <th>Status</th>
+                  <th>Amount</th>
                   <th>Reference</th>
-                  <th>Signature</th>
                 </tr>
               </thead>
               <tbody>
                 {snapshot.paymentHistory.map((tx) => (
                   <tr key={tx.id}>
-                    <td>{tx.receivedAt}</td>
+                    <td>{formatDateTime(tx.receivedAt)}</td>
                     <td>{tx.provider}</td>
                     <td>{tx.gatewayStatus || "-"}</td>
+                    <td>{tx.amount == null ? "-" : formatMoney(tx.amount, tx.currency || latestInvoice?.currency || "USD")}</td>
                     <td>{tx.gatewayReference || "-"}</td>
-                    <td>{tx.signatureValid ? "Valid" : "Invalid"}</td>
                   </tr>
                 ))}
               </tbody>

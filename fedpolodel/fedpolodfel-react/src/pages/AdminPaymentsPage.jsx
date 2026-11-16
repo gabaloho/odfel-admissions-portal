@@ -171,14 +171,24 @@ export function AdminPaymentsPage() {
                   <th>Status</th>
                   <th>Reference</th>
                   <th>Provider</th>
-                  <th>Manual Override</th>
+                  <th>Manual Verification / Override</th>
                 </tr>
               </thead>
               <tbody>
                 {data?.invoices?.length ? (
                   data.invoices.map((invoice) => (
                     <tr key={invoice.invoiceNumber}>
-                      <td>{invoice.invoiceNumber}</td>
+                      <td>
+                        {invoice.invoiceNumber}
+                        <br />
+                        <a
+                          href={`/api/admin/invoices/${encodeURIComponent(invoice.invoiceNumber)}/pdf`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {invoice.paymentStatus === "Paid" ? "View receipt (PDF)" : "View invoice (PDF)"}
+                        </a>
+                      </td>
                       <td>
                         {invoice.applicantSurname} {invoice.applicantOtherNames}
                         <br />
@@ -208,7 +218,7 @@ export function AdminPaymentsPage() {
                             </select>
                             <input name="paymentReference" defaultValue={invoice.paymentReference || ""} placeholder="Reference" />
                             <input name="paymentProvider" defaultValue={invoice.paymentProvider || ""} placeholder="Provider" />
-                            <input name="note" placeholder="Reason / note" required />
+                            <input name="note" placeholder="Verification note (required)" required />
                             <button type="submit" disabled={busy}>Save</button>
                           </form>
                         ) : (
@@ -271,7 +281,7 @@ export function AdminPaymentsPage() {
                 <tr>
                   <th>Time</th>
                   <th>Invoice</th>
-                  <th>Actor</th>
+                  <th>Performed By</th>
                   <th>Action</th>
                   <th>Before</th>
                   <th>After</th>
@@ -284,10 +294,7 @@ export function AdminPaymentsPage() {
                     <tr key={a.id}>
                       <td>{a.createdAt}</td>
                       <td>{a.invoiceNumber || "-"}</td>
-                      <td>
-                        {a.actorType}
-                        {a.actorId ? ` (${a.actorId})` : ""}
-                      </td>
+                      <td>{a.actorLabel || `${a.actorType}${a.actorId ? ` (${a.actorId})` : ""}`}</td>
                       <td>{a.action}</td>
                       <td>{a.beforeStatus || "-"}</td>
                       <td>{a.afterStatus || "-"}</td>

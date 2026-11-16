@@ -1,9 +1,15 @@
 const path = require("path");
+const fs = require("fs");
 const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const { DatabaseSync } = require("node:sqlite");
 
-const DB_PATH = path.resolve(__dirname, "../../data/app.db");
+const DB_PATH = process.env.DATABASE_PATH
+  ? path.resolve(process.env.DATABASE_PATH)
+  : path.resolve(__dirname, "../../data/app.db");
+// data/ is gitignored, so it does not exist on a fresh clone and SQLite will
+// not create missing directories.
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const db = new DatabaseSync(DB_PATH);
 
 const DEFAULT_PROGRAMS = [
@@ -50,6 +56,19 @@ function getConfiguredPrograms() {
 const CONFIGURED_PROGRAMS = getConfiguredPrograms();
 
 const SUCCESS_STATUSES = ["success", "successful", "completed", "paid"];
+
+// A transaction only proves an invoice was paid if it is a signature-verified
+// success for the invoice's exact amount and currency. Reconciliation uses this,
+// so a signed-but-underpaid event can never be turned into "Paid" by
+// "Auto Reconcile". (Used inside subqueries where `i` is the invoice row.)
+const VALID_SUCCESS_TX = `
+  pt.invoice_number = i.invoice_number
+  AND pt.signature_valid = 1
+  AND LOWER(IFNULL(pt.gateway_status, '')) IN (${SUCCESS_STATUSES.map((st) => `'${st}'`).join(", ")})
+  AND pt.amount IS NOT NULL
+  AND CAST(ROUND(pt.amount * 100) AS INTEGER) = CAST(ROUND(i.amount * 100) AS INTEGER)
+  AND UPPER(IFNULL(pt.currency, '')) = UPPER(i.currency)
+`;
 const ADMIN_PASSWORD_EXPIRY_DAYS = 90;
 
 function addDaysIso(days) {
@@ -152,6 +171,7 @@ function ensureSeed(options = {}) {
       invoice_number TEXT,
       actor_type TEXT NOT NULL,
       actor_id TEXT,
+      actor_label TEXT,
       action TEXT NOT NULL,
       before_status TEXT,
       after_status TEXT,
@@ -195,6 +215,11 @@ function ensureSeed(options = {}) {
 
   if (!hasUpdatedAt) {
     db.exec("ALTER TABLE invoices ADD COLUMN updated_at TEXT");
+  }
+
+  const auditCols = db.prepare("PRAGMA table_info(payment_audit_logs)").all();
+  if (!auditCols.some((c) => c.name === "actor_label")) {
+    db.exec("ALTER TABLE payment_audit_logs ADD COLUMN actor_label TEXT");
   }
 
   const adminCols = db.prepare("PRAGMA table_info(admin_users)").all();
@@ -320,6 +345,7 @@ function toAuditLog(row) {
     invoiceNumber: row.invoice_number || null,
     actorType: row.actor_type,
     actorId: row.actor_id || null,
+    actorLabel: row.actor_label || describeActor(row.actor_type, row.actor_id),
     action: row.action,
     beforeStatus: row.before_status || null,
     afterStatus: row.after_status || null,
@@ -327,6 +353,11 @@ function toAuditLog(row) {
     metadataJson: row.metadata_json || null,
     createdAt: row.created_at
   };
+}
+
+function describeActor(actorType, actorId) {
+  const type = actorType || "system";
+  return actorId ? `${type}: ${actorId}` : type;
 }
 
 function toAdmin(row) {
@@ -696,12 +727,25 @@ function buildInvoiceNumber() {
   return `INV-${stamp}-${random}`;
 }
 
+function buildUniqueInvoiceNumber() {
+  // The number is short and human-friendly, so collisions are possible (the
+  // timestamp part wraps every ~28 hours). Retry instead of failing the insert.
+  const exists = db.prepare("SELECT 1 FROM invoices WHERE invoice_number = ?");
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const candidate = buildInvoiceNumber();
+    if (!exists.get(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error("Could not generate a unique invoice number.");
+}
+
 function createInvoice({ userId, amount, feeDescription, currency }) {
   const now = new Date().toISOString();
   const invoice = {
     id: crypto.randomUUID(),
     userId,
-    invoiceNumber: buildInvoiceNumber(),
+    invoiceNumber: buildUniqueInvoiceNumber(),
     amount,
     feeDescription,
     currency,
@@ -742,6 +786,7 @@ function createAuditLog({
   invoiceNumber,
   actorType,
   actorId = null,
+  actorLabel = null,
   action,
   beforeStatus = null,
   afterStatus = null,
@@ -753,6 +798,7 @@ function createAuditLog({
     invoiceNumber,
     actorType,
     actorId,
+    actorLabel: actorLabel || describeActor(actorType, actorId),
     action,
     beforeStatus,
     afterStatus,
@@ -764,15 +810,16 @@ function createAuditLog({
   db.prepare(
     `
     INSERT INTO payment_audit_logs (
-      id, invoice_number, actor_type, actor_id, action, before_status,
+      id, invoice_number, actor_type, actor_id, actor_label, action, before_status,
       after_status, note, metadata_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `
   ).run(
     log.id,
     log.invoiceNumber,
     log.actorType,
     log.actorId,
+    log.actorLabel,
     log.action,
     log.beforeStatus,
     log.afterStatus,
@@ -851,6 +898,7 @@ function updateInvoicePayment({
   paidAt = null,
   actorType,
   actorId = null,
+  actorLabel = null,
   action,
   note = null,
   metadata = null,
@@ -858,6 +906,23 @@ function updateInvoicePayment({
   const current = getInvoiceByNumber(invoiceNumber);
   if (!current) {
     return null;
+  }
+
+  if (["webhook", "gateway"].includes(actorType) && current.paymentStatus === "Paid") {
+    if (paymentReference && paymentReference !== current.paymentReference) {
+      createAuditLog({
+        invoiceNumber,
+        actorType,
+        actorId,
+        actorLabel,
+        action: "duplicate_payment_received",
+        beforeStatus: "Paid",
+        afterStatus: "Paid",
+        note: `Invoice already paid (${current.paymentReference || "no reference"}); received another successful payment ${paymentReference}. Review for refund.`,
+        metadata,
+      });
+    }
+    return current;
   }
 
   const now = new Date().toISOString();
@@ -878,6 +943,7 @@ function updateInvoicePayment({
     invoiceNumber,
     actorType,
     actorId,
+    actorLabel,
     action,
     beforeStatus: current.paymentStatus,
     afterStatus: normalizedStatus,
@@ -897,6 +963,7 @@ function markInvoicePaid(invoiceNumber, paymentReference, opts = {}) {
     paidAt: opts.paidAt || null,
     actorType: opts.actorType || "system",
     actorId: opts.actorId || null,
+    actorLabel: opts.actorLabel || null,
     action: opts.action || "invoice_mark_paid",
     note: opts.note || null,
     metadata: opts.metadata || null,
@@ -909,7 +976,9 @@ function manualOverrideInvoice({
   paymentReference = null,
   paymentProvider = null,
   actorId,
+  actorLabel = null,
   note,
+  metadata = null,
 }) {
   return updateInvoicePayment({
     invoiceNumber,
@@ -918,10 +987,12 @@ function manualOverrideInvoice({
     paymentProvider,
     actorType: "admin",
     actorId,
+    actorLabel,
     action: "manual_override",
     note,
     metadata: {
       source: "admin_console",
+      ...(metadata || {}),
     },
   });
 }
@@ -984,27 +1055,21 @@ function listReconciliationRows({ status = "", q = "" } = {}) {
       (
         SELECT pt.gateway_reference
         FROM payment_transactions pt
-        WHERE pt.invoice_number = i.invoice_number
-          AND pt.signature_valid = 1
-          AND LOWER(IFNULL(pt.gateway_status, '')) IN ('success', 'successful', 'completed', 'paid')
+        WHERE ${VALID_SUCCESS_TX}
         ORDER BY pt.received_at DESC
         LIMIT 1
       ) AS latest_success_reference,
       (
         SELECT pt.provider
         FROM payment_transactions pt
-        WHERE pt.invoice_number = i.invoice_number
-          AND pt.signature_valid = 1
-          AND LOWER(IFNULL(pt.gateway_status, '')) IN ('success', 'successful', 'completed', 'paid')
+        WHERE ${VALID_SUCCESS_TX}
         ORDER BY pt.received_at DESC
         LIMIT 1
       ) AS latest_success_provider,
       (
         SELECT pt.received_at
         FROM payment_transactions pt
-        WHERE pt.invoice_number = i.invoice_number
-          AND pt.signature_valid = 1
-          AND LOWER(IFNULL(pt.gateway_status, '')) IN ('success', 'successful', 'completed', 'paid')
+        WHERE ${VALID_SUCCESS_TX}
         ORDER BY pt.received_at DESC
         LIMIT 1
       ) AS latest_success_at
@@ -1092,27 +1157,21 @@ function getReconciliationReport() {
         (
           SELECT pt.gateway_reference
           FROM payment_transactions pt
-          WHERE pt.invoice_number = i.invoice_number
-            AND pt.signature_valid = 1
-            AND LOWER(IFNULL(pt.gateway_status, '')) IN ('success', 'successful', 'completed', 'paid')
+          WHERE ${VALID_SUCCESS_TX}
           ORDER BY pt.received_at DESC
           LIMIT 1
         ) AS latest_success_reference,
         (
           SELECT pt.provider
           FROM payment_transactions pt
-          WHERE pt.invoice_number = i.invoice_number
-            AND pt.signature_valid = 1
-            AND LOWER(IFNULL(pt.gateway_status, '')) IN ('success', 'successful', 'completed', 'paid')
+          WHERE ${VALID_SUCCESS_TX}
           ORDER BY pt.received_at DESC
           LIMIT 1
         ) AS latest_success_provider,
         (
           SELECT pt.received_at
           FROM payment_transactions pt
-          WHERE pt.invoice_number = i.invoice_number
-            AND pt.signature_valid = 1
-            AND LOWER(IFNULL(pt.gateway_status, '')) IN ('success', 'successful', 'completed', 'paid')
+          WHERE ${VALID_SUCCESS_TX}
           ORDER BY pt.received_at DESC
           LIMIT 1
         ) AS latest_success_at
@@ -1136,7 +1195,7 @@ function getReconciliationReport() {
   };
 }
 
-function autoReconcileInvoices(actorId) {
+function autoReconcileInvoices(actorId, actorLabel = null) {
   const report = getReconciliationReport();
   let updated = 0;
 
@@ -1149,6 +1208,7 @@ function autoReconcileInvoices(actorId) {
       paidAt: row.latest_success_at || null,
       actorType: "admin",
       actorId,
+      actorLabel: actorLabel || null,
       action: "reconciliation_auto_fix",
       note: "Auto-reconciled based on successful signed transaction.",
       metadata: {
@@ -1166,6 +1226,44 @@ function autoReconcileInvoices(actorId) {
     mismatches: report.payableMismatch.length,
     paidWithoutTx: report.paidWithoutTx.length,
   };
+}
+
+function listAuditLogsByInvoice(invoiceNumber) {
+  const rows = db
+    .prepare("SELECT * FROM payment_audit_logs WHERE invoice_number = ? ORDER BY created_at DESC")
+    .all(invoiceNumber);
+  return rows.map(toAuditLog);
+}
+
+// Who/what moved the invoice into its current Paid state (webhook or admin).
+function getPaymentConfirmation(invoiceNumber) {
+  const row = db
+    .prepare(
+      `
+      SELECT * FROM payment_audit_logs
+      WHERE invoice_number = ? AND after_status = 'Paid' AND IFNULL(before_status, '') <> 'Paid'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `
+    )
+    .get(invoiceNumber);
+  return toAuditLog(row);
+}
+
+function getSuccessfulTransactionByReference(invoiceNumber, gatewayReference) {
+  if (!gatewayReference) return null;
+  const row = db
+    .prepare(
+      `
+      SELECT * FROM payment_transactions
+      WHERE invoice_number = ? AND gateway_reference = ? AND signature_valid = 1
+        AND LOWER(IFNULL(gateway_status, '')) IN ('success', 'successful', 'completed', 'paid')
+      ORDER BY received_at DESC
+      LIMIT 1
+    `
+    )
+    .get(invoiceNumber, gatewayReference);
+  return toPaymentTransaction(row);
 }
 
 function normalizeGatewayStatus(input) {
@@ -1221,6 +1319,9 @@ module.exports = {
   listRecentPaymentTransactions,
   listRecentAuditLogs,
   listPaymentHistoryByInvoice,
+  listAuditLogsByInvoice,
+  getPaymentConfirmation,
+  getSuccessfulTransactionByReference,
   getReconciliationReport,
   autoReconcileInvoices,
   isSuccessGatewayStatus,

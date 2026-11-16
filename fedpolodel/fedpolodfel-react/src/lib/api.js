@@ -17,7 +17,11 @@ export async function apiRequest(path, options = {}) {
   }
 
   if (!response.ok || !payload?.ok) {
-    const message = payload?.message || "Request failed.";
+    const message =
+      payload?.message ||
+      (payload === null
+        ? "Could not reach the admissions server. Make sure the backend is running (npm run backend:start)."
+        : "Request failed.");
     const error = new Error(message);
     error.status = response.status;
     error.payload = payload;

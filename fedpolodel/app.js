@@ -4,29 +4,33 @@ const crypto = require("crypto");
 const express = require("express");
 const session = require("express-session");
 const bcrypt = require("bcryptjs");
-const store = require("./src/data/store");
+const { loadBackendEnv, readFrontendEnvValue } = require("./src/config/env");
+
+// Load backend.env before anything reads process.env (store.js reads PROGRAMS_JSON on load).
+const LOADED_ENV_FILE = loadBackendEnv(__dirname);
+
+const { createWebhookProcessor } = require("./src/payments/webhooks");
+const { createMockGateway, validateCard, PUBLIC_TEST_CARDS } = require("./src/payments/mockGateway");
+const { createPaystackClient } = require("./src/payments/paystack");
+const { buildInvoiceDocument, renderInvoicePdf } = require("./src/invoices/document");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || "admin";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "AdminPass123!";
+const IS_PRODUCTION = process.env.NODE_ENV === "production";
+const DEFAULT_APPLICATION_FEE_AMOUNT = 25000;
 const applicationFeeAmountSetting = process.env.APPLICATION_FEE_AMOUNT;
-if (
-  process.env.NODE_ENV === "production" &&
-  (!applicationFeeAmountSetting || !applicationFeeAmountSetting.trim())
-) {
-  throw new Error("Set APPLICATION_FEE_AMOUNT before starting the production server (use 0 for free applications).");
-}
 if (applicationFeeAmountSetting != null && !applicationFeeAmountSetting.trim()) {
   throw new Error("APPLICATION_FEE_AMOUNT must be a non-negative number.");
 }
 const APPLICATION_FEE_AMOUNT = applicationFeeAmountSetting == null
-  ? 0
+  ? DEFAULT_APPLICATION_FEE_AMOUNT
   : Number(applicationFeeAmountSetting);
 if (!Number.isFinite(APPLICATION_FEE_AMOUNT) || APPLICATION_FEE_AMOUNT < 0) {
   throw new Error("APPLICATION_FEE_AMOUNT must be a non-negative number.");
 }
-const APPLICATION_FEE_CURRENCY = String(process.env.APPLICATION_FEE_CURRENCY || "USD")
+const APPLICATION_FEE_CURRENCY = String(process.env.APPLICATION_FEE_CURRENCY || "NGN")
   .trim()
   .toUpperCase();
 if (!/^[A-Z]{3}$/.test(APPLICATION_FEE_CURRENCY)) {
@@ -37,7 +41,53 @@ const APPLICATION_FEE_DESCRIPTION =
 if (!APPLICATION_FEE_DESCRIPTION) {
   throw new Error("APPLICATION_FEE_DESCRIPTION must not be empty.");
 }
-const PAYMENT_WEBHOOK_SECRET = process.env.PAYMENT_WEBHOOK_SECRET || "change-me-webhook-secret";
+const PAYSTACK_SECRET_KEY = String(process.env.PAYSTACK_SECRET_KEY || "").trim();
+const PAYSTACK_WEBHOOK_SECRETS = [
+  process.env.PAYSTACK_WEBHOOK_SECRET,
+  ...String(process.env.PAYSTACK_PREVIOUS_WEBHOOK_SECRETS || "").split(","),
+]
+  .map((value) => String(value || "").trim())
+  .filter(Boolean);
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || "").trim().replace(/\/+$/, "");
+if (IS_PRODUCTION) {
+  if (!PAYSTACK_SECRET_KEY || PAYSTACK_SECRET_KEY === "replace-with-your-paystack-secret-key") {
+    throw new Error("Set PAYSTACK_SECRET_KEY from Secret Manager before starting the production server.");
+  }
+  if (!PAYSTACK_WEBHOOK_SECRETS.length || PAYSTACK_WEBHOOK_SECRETS.some((secret) => !secret.startsWith("whsec_"))) {
+    throw new Error("Set PAYSTACK_WEBHOOK_SECRET to a Paystack whsec_ signing secret from Secret Manager.");
+  }
+  if (!PUBLIC_BASE_URL) {
+    throw new Error("Set PUBLIC_BASE_URL to the HTTPS application URL before starting the production server.");
+  }
+  let publicUrl;
+  try {
+    publicUrl = new URL(PUBLIC_BASE_URL);
+  } catch {
+    throw new Error("PUBLIC_BASE_URL must be an absolute HTTPS URL.");
+  }
+  if (publicUrl.protocol !== "https:" || publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash) {
+    throw new Error("PUBLIC_BASE_URL must be an HTTPS origin without a path, query, or fragment.");
+  }
+}
+const PAYMENT_WEBHOOK_SECRET = process.env.PAYMENT_WEBHOOK_SECRET || (IS_PRODUCTION ? "" : "change-me-webhook-secret");
+if (IS_PRODUCTION) {
+  const secret = String(process.env.SESSION_SECRET || "").trim();
+  if (secret.length < 32 || secret === "change-this-secret-in-production") throw new Error("Set SESSION_SECRET to a random secret of at least 32 characters.");
+  if (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD || ADMIN_PASSWORD === "AdminPass123!") throw new Error("Set unique ADMIN_USERNAME and ADMIN_PASSWORD in production.");
+}
+const { store, sessionStore } = require("./src/data/select-store").selectStore();
+// Dummy-card checkout. On by default for development, off by default in production.
+const MOCK_GATEWAY_ENABLED = process.env.MOCK_PAYMENTS_ENABLED
+  ? ["1", "true", "yes"].includes(String(process.env.MOCK_PAYMENTS_ENABLED).trim().toLowerCase())
+  : !IS_PRODUCTION;
+if (IS_PRODUCTION && MOCK_GATEWAY_ENABLED) {
+  throw new Error("MOCK_PAYMENTS_ENABLED must be false in production.");
+}
+// Name printed on invoice/receipt PDFs. Falls back to the frontend's VITE_INSTITUTION_NAME.
+const INSTITUTION_NAME =
+  String(process.env.INSTITUTION_NAME || "").trim() ||
+  readFrontendEnvValue(__dirname, "VITE_INSTITUTION_NAME") ||
+  "Your Institution";
 const REACT_DIST_DIR = path.join(__dirname, "fedpolodfel-react", "dist");
 const REACT_INDEX_FILE = path.join(REACT_DIST_DIR, "index.html");
 const REACT_PUBLIC_ROUTES = new Set([
@@ -49,10 +99,16 @@ const REACT_PUBLIC_ROUTES = new Set([
   "/continue-application",
 ]);
 
-store.ensureSeed({
-  defaultAdminUsername: ADMIN_USERNAME,
-  defaultAdminPassword: ADMIN_PASSWORD,
+const webhookProcessor = createWebhookProcessor({
+  store,
+  secret: PAYMENT_WEBHOOK_SECRET,
+  paystackSecretKey: PAYSTACK_SECRET_KEY || PAYMENT_WEBHOOK_SECRET,
+  paystackWebhookSecrets: PAYSTACK_WEBHOOK_SECRETS.length ? PAYSTACK_WEBHOOK_SECRETS : [PAYMENT_WEBHOOK_SECRET],
+  expectedPaystackDomain: IS_PRODUCTION ? "live" : null,
+  mockGatewayEnabled: MOCK_GATEWAY_ENABLED,
 });
+const mockGateway = createMockGateway({ secret: PAYMENT_WEBHOOK_SECRET, webhookProcessor });
+const paystackClient = createPaystackClient({ secretKey: PAYSTACK_SECRET_KEY });
 
 const ROLE_PERMISSIONS = {
   super_admin: ["payments:view", "payments:write", "payments:reconcile", "admin-users:manage"],
@@ -60,14 +116,33 @@ const ROLE_PERMISSIONS = {
   auditor: ["payments:view"],
 };
 
+// Payment webhooks must be registered before the JSON/urlencoded parsers: the
+// signature is an HMAC of the exact raw bytes, and once express.json() has
+// consumed the body express.raw() has nothing left to read.
+app.post("/webhooks/payments", express.raw({ type: () => true, limit: "256kb" }), async (req, res) => {
+  const result = await webhookProcessor.processWebhook({ headers: req.headers, rawBody: req.body });
+  return res.status(result.httpStatus).send(result.message);
+});
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+if (IS_PRODUCTION) app.set("trust proxy", 1);
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "change-this-secret-in-production",
+    store: sessionStore,
     resave: false,
     saveUninitialized: false,
+    // SameSite=Lax: browsers do not send the session cookie on cross-site POSTs,
+    // so another website cannot submit the admin override form (or any other
+    // state-changing request) using a logged-in admin's session.
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: IS_PRODUCTION || process.env.SESSION_COOKIE_SECURE === "true",
+      maxAge: 86400000,
+    },
   })
 );
 
@@ -97,18 +172,68 @@ function requireApiAuth(req, res, next) {
   return next();
 }
 
-function requireAdminSession(req, res, next) {
+// Start a fresh session for exactly one identity. Regenerating prevents session
+// fixation and guarantees a session is either an applicant *or* an admin, never
+// both, so an applicant session can never carry admin rights.
+function startSession(req, key, value) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((err) => {
+      if (err) return reject(err);
+      req.session[key] = value;
+      return resolve();
+    });
+  });
+}
+
+function studentSessionFor(user) {
+  return {
+    id: user.id,
+    surname: user.surname,
+    otherNames: user.otherNames,
+    email: user.email,
+  };
+}
+
+// Re-check the admin against the database on every admin request so that a
+// deactivated admin, or a role change, takes effect immediately.
+// Returns an error string, or null when the session is a valid admin session.
+async function verifyAdminSession(req) {
   if (!req.session.admin) {
-    req.session.message = "Admin login required.";
+    return "Admin login required.";
+  }
+  if (req.session.user) {
+    delete req.session.admin;
+    return "Applicant sessions cannot use admin tools. Log in with an admin account.";
+  }
+  const current = await store.getAdminById(req.session.admin.id);
+  if (!current || !current.isActive) {
+    delete req.session.admin;
+    return "Admin account is no longer active.";
+  }
+  req.session.admin.role = current.role;
+  req.session.admin.mustChangePassword = Boolean(current.mustChangePassword) || store.isAdminPasswordExpired(current);
+  req.session.admin.passwordExpiresAt = current.passwordExpiresAt || null;
+  return null;
+}
+
+function adminActorLabel(admin) {
+  return `Admin: ${admin.username} (${admin.role})`;
+}
+
+async function requireAdminSession(req, res, next) {
+  const problem = await verifyAdminSession(req);
+  if (problem) {
+    req.session.message = problem;
     return res.redirect("/admin/login");
   }
 
   return next();
 }
 
-function requireAdmin(req, res, next) {
-  if (!req.session.admin) {
-    req.session.message = "Admin login required.";
+async function requireAdmin(req, res, next) {
+  const problem = await verifyAdminSession(req);
+  if (problem) {
+    req.session.message = problem;
     return res.redirect("/admin/login");
   }
 
@@ -128,9 +253,10 @@ function hasPermission(admin, permission) {
 }
 
 function requireAdminPermission(permission) {
-  return (req, res, next) => {
-    if (!req.session.admin) {
-      req.session.message = "Admin login required.";
+  return async (req, res, next) => {
+    const problem = await verifyAdminSession(req);
+    if (problem) {
+      req.session.message = problem;
       return res.redirect("/admin/login");
     }
 
@@ -148,11 +274,12 @@ function requireAdminPermission(permission) {
   };
 }
 
-function requireApiAdmin(req, res, next) {
-  if (!req.session.admin) {
+async function requireApiAdmin(req, res, next) {
+  const problem = await verifyAdminSession(req);
+  if (problem) {
     return res.status(401).json({
       ok: false,
-      message: "Admin login required.",
+      message: problem,
     });
   }
 
@@ -167,11 +294,12 @@ function requireApiAdmin(req, res, next) {
   return next();
 }
 
-function requireApiAdminSession(req, res, next) {
-  if (!req.session.admin) {
+async function requireApiAdminSession(req, res, next) {
+  const problem = await verifyAdminSession(req);
+  if (problem) {
     return res.status(401).json({
       ok: false,
-      message: "Admin login required.",
+      message: problem,
     });
   }
 
@@ -179,11 +307,12 @@ function requireApiAdminSession(req, res, next) {
 }
 
 function requireApiAdminPermission(permission) {
-  return (req, res, next) => {
-    if (!req.session.admin) {
+  return async (req, res, next) => {
+    const problem = await verifyAdminSession(req);
+    if (problem) {
       return res.status(401).json({
         ok: false,
-        message: "Admin login required.",
+        message: problem,
       });
     }
 
@@ -218,7 +347,12 @@ function buildAdminSession(admin) {
 }
 
 function escapeCsvValue(value) {
-  const text = String(value == null ? "" : value);
+  let text = String(value == null ? "" : value);
+  // Applicant-controlled values (names, emails) must not run as spreadsheet
+  // formulas when finance opens the export in Excel/Sheets (CSV injection).
+  if (/^[=+\-@\t\r]/.test(text)) {
+    text = `'${text}`;
+  }
   const escaped = text.replace(/"/g, '""');
   return `"${escaped}"`;
 }
@@ -229,87 +363,121 @@ function rowsToCsv(rows, headers) {
   return [headerRow, ...dataRows].join("\n");
 }
 
-function safeCompareHex(signatureA, signatureB) {
-  try {
-    const a = Buffer.from(String(signatureA || ""), "hex");
-    const b = Buffer.from(String(signatureB || ""), "hex");
-    if (a.length === 0 || b.length === 0 || a.length !== b.length) {
-      return false;
-    }
-    return crypto.timingSafeEqual(a, b);
-  } catch {
-    return false;
-  }
+// Request bodies are untrusted: JSON can carry numbers, arrays or objects where a
+// string is expected (node:sqlite even treats an object as named parameters).
+// Returns the trimmed string, or "" for anything that is not a string/number.
+function textField(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return typeof value === "string" ? value.trim() : "";
 }
 
-function detectWebhookProvider(headers) {
-  if (headers["x-paystack-signature"]) return "paystack";
-  if (headers["verif-hash"] || headers["x-flutterwave-signature"]) return "flutterwave";
-  return "unknown";
-}
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 8;
 
-function verifyWebhookSignature(provider, headers, rawBodyBuffer) {
-  if (!PAYMENT_WEBHOOK_SECRET) {
-    return false;
-  }
-
-  if (provider === "paystack") {
-    const signature = headers["x-paystack-signature"];
-    const expected = crypto
-      .createHmac("sha512", PAYMENT_WEBHOOK_SECRET)
-      .update(rawBodyBuffer)
-      .digest("hex");
-    return safeCompareHex(signature, expected);
-  }
-
-  if (provider === "flutterwave") {
-    const signature = headers["verif-hash"] || headers["x-flutterwave-signature"];
-    return String(signature || "") === PAYMENT_WEBHOOK_SECRET;
-  }
-
-  return false;
-}
-
-function parseWebhookPayload(provider, payload) {
-  const data = payload && payload.data ? payload.data : {};
-  const eventType = payload.event || payload.type || "unknown";
-  let invoiceNumber = null;
-  let gatewayStatus = "unknown";
-  let gatewayReference = null;
-  let amount = null;
-  let currency = null;
-
-  if (provider === "paystack") {
-    invoiceNumber =
-      data?.metadata?.invoiceNumber ||
-      data?.metadata?.invoice_number ||
-      data?.invoice_number ||
-      null;
-    gatewayStatus = data?.status || payload?.status || (eventType === "charge.success" ? "success" : "unknown");
-    gatewayReference = data?.reference || data?.tx_ref || null;
-    amount = typeof data?.amount === "number" ? data.amount / 100 : null;
-    currency = data?.currency || null;
-  } else if (provider === "flutterwave") {
-    invoiceNumber =
-      data?.meta?.invoiceNumber ||
-      data?.meta?.invoice_number ||
-      data?.invoice_number ||
-      payload?.invoiceNumber ||
-      null;
-    gatewayStatus = data?.status || payload?.status || "unknown";
-    gatewayReference = data?.tx_ref || data?.flw_ref || payload?.reference || null;
-    amount = data?.amount == null ? null : Number(data.amount);
-    currency = data?.currency || payload?.currency || null;
-  }
-
-  return {
-    eventType,
-    invoiceNumber,
-    gatewayStatus,
-    gatewayReference,
-    amount,
-    currency,
+function validateRegistration(body = {}) {
+  const values = {
+    surname: textField(body.surname),
+    otherNames: textField(body.otherNames),
+    email: textField(body.email).toLowerCase(),
+    phone: textField(body.phone),
+    password: typeof body.password === "string" ? body.password : "",
   };
+  if (!values.surname || !values.otherNames || !values.email || !values.phone || !values.password) {
+    return { error: "All registration fields are required." };
+  }
+  if (values.surname.length > 100 || values.otherNames.length > 150) {
+    return { error: "Names must be at most 100 (surname) and 150 (other names) characters." };
+  }
+  if (values.email.length > 190 || !EMAIL_PATTERN.test(values.email)) {
+    return { error: "Enter a valid email address." };
+  }
+  if (values.phone.length > 30) {
+    return { error: "Phone number must be at most 30 characters." };
+  }
+  if (values.password.length < MIN_PASSWORD_LENGTH || values.password.length > 200) {
+    return { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` };
+  }
+  return { values };
+}
+
+async function validatePreApplication(body = {}) {
+  const values = {
+    programId: textField(body.programId),
+    modeOfStudy: textField(body.modeOfStudy),
+    previousInstitution: textField(body.previousInstitution),
+    notes: textField(body.notes),
+  };
+  if (!values.programId || !values.modeOfStudy || !values.previousInstitution) {
+    return { error: "Program, mode of study, and previous institution are required." };
+  }
+  if (values.modeOfStudy.length > 60 || values.previousInstitution.length > 190 || values.notes.length > 2000) {
+    return { error: "One of the fields is too long." };
+  }
+  if (!await store.getProgramById(values.programId)) {
+    return { error: "Selected program is invalid." };
+  }
+  return { values };
+}
+
+const OVERRIDE_STATUSES = ["Paid", "Unpaid", "Pending", "Failed"];
+
+function parseOverrideRequest(body = {}) {
+  const values = {
+    status: textField(body.status),
+    paymentReference: textField(body.paymentReference) || null,
+    paymentProvider: textField(body.paymentProvider) || null,
+    note: textField(body.note) || null,
+  };
+  if (!OVERRIDE_STATUSES.includes(values.status)) {
+    return { error: "Invalid status selection for manual override." };
+  }
+  if (!values.note) {
+    return { error: "A note explaining the manual verification is required." };
+  }
+  if (
+    (values.paymentReference && values.paymentReference.length > 120) ||
+    (values.paymentProvider && values.paymentProvider.length > 40) ||
+    values.note.length > 500
+  ) {
+    return { error: "Reference (120), provider (40) or note (500) is too long." };
+  }
+  return { values };
+}
+
+const SELF_PAY_FORBIDDEN_MESSAGE =
+  "Applicants cannot mark invoices as paid. Pay with a card from the invoice page, " +
+  "or contact the finance office to verify an offline payment.";
+
+function publicUser(user) {
+  if (!user) return null;
+  const { passwordHash, ...rest } = user;
+  return rest;
+}
+
+async function loadInvoiceDocument(invoice) {
+  const user = await store.getUserById(invoice.userId);
+  const application = await store.getApplicationByUserId(invoice.userId);
+  const program = application ? await store.getProgramById(application.programId) : null;
+  const document = await buildInvoiceDocument({
+    store,
+    invoice,
+    user,
+    program,
+    institutionName: INSTITUTION_NAME,
+  });
+  return { user, application, program, document };
+}
+
+async function sendInvoicePdf(res, invoice, { inline = false } = {}) {
+  const { document } = await loadInvoiceDocument(invoice);
+  const fileName = document.kind === "receipt"
+    ? `payment-receipt-${document.receiptNumber}.pdf`
+    : `invoice-${document.invoiceNumber}.pdf`;
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${fileName}"`);
+  res.setHeader("Cache-Control", "private, no-store");
+  return renderInvoicePdf(document, res);
 }
 
 function sendApiError(res, status, message, extra = {}) {
@@ -327,6 +495,29 @@ function sendApiSuccess(res, payload = {}) {
   });
 }
 
+function requireJsonBody(req, res, next) {
+  if (!req.is("application/json")) {
+    return sendApiError(res, 415, "Send the request body as JSON with the header Content-Type: application/json.");
+  }
+  return next();
+}
+
+function describePostEndpoint(description, example) {
+  return async (req, res) => {
+    res.set("Allow", "POST");
+    return sendApiError(
+      res,
+      405,
+      `The API is up. ${description} Send a POST request with a JSON body to use this endpoint.`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        example,
+      }
+    );
+  };
+}
+
 function reactBuildExists() {
   return fs.existsSync(REACT_INDEX_FILE);
 }
@@ -338,33 +529,71 @@ function serveReactApp(req, res, next) {
   return res.sendFile(REACT_INDEX_FILE);
 }
 
-app.get("/api/auth/session", (req, res) => {
+function sendReactBuildMissing(req, res) {
+  return res
+    .status(503)
+    .send(
+      "React build not found. Run `npm run build` in the project root (fedpolodel/), " +
+        "or use `npm run dev` for the Vite dev server."
+    );
+}
+
+// Serves the React app for a page route, or the "build missing" notice.
+function servePage(req, res) {
+  return serveReactApp(req, res, () => sendReactBuildMissing(req, res));
+}
+
+app.get(
+  "/api/auth/register",
+  describePostEndpoint("This endpoint creates an applicant account (signup).", {
+    surname: "Doe",
+    otherNames: "Jane",
+    email: "jane@example.com",
+    phone: "08000000000",
+    password: "your-password",
+  })
+);
+
+app.get(
+  "/api/auth/login",
+  describePostEndpoint("This endpoint signs in an applicant.", {
+    email: "jane@example.com",
+    password: "your-password",
+  })
+);
+
+app.get("/api/health", async (req, res) => {
+  return sendApiSuccess(res, { status: "up", uptimeSeconds: Math.round(process.uptime()) });
+});
+
+app.get("/api/auth/session", async (req, res) => {
   return sendApiSuccess(res, {
     user: req.session.user || null,
     admin: req.session.admin || null,
   });
 });
 
-app.post("/api/auth/register", async (req, res) => {
-  const { surname, otherNames, email, phone, password } = req.body || {};
-
-  if (!surname || !otherNames || !email || !phone || !password) {
-    return sendApiError(res, 400, "All registration fields are required.");
+app.post("/api/auth/register", requireJsonBody, async (req, res) => {
+  const { values, error } = validateRegistration(req.body || {});
+  if (error) {
+    return sendApiError(res, 400, error);
   }
+  const { surname, otherNames, email, phone, password } = values;
 
-  if (store.getUserByEmail(email)) {
+  if (await store.getUserByEmail(email)) {
     return sendApiError(res, 409, "An account with this email already exists.");
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = store.createUser({ surname, otherNames, email, phone, passwordHash });
+  let user;
+  try {
+    user = await store.createUser({ surname, otherNames, email, phone, passwordHash });
+  } catch (error) {
+    if (error.code === "DUPLICATE_EMAIL" || error.errcode === 2067) return sendApiError(res, 409, "An account with this email already exists.");
+    throw error;
+  }
 
-  req.session.user = {
-    id: user.id,
-    surname: user.surname,
-    otherNames: user.otherNames,
-    email: user.email,
-  };
+  await startSession(req, "user", studentSessionFor(user));
 
   return sendApiSuccess(res, {
     message: "Account created successfully.",
@@ -373,9 +602,10 @@ app.post("/api/auth/register", async (req, res) => {
   });
 });
 
-app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body || {};
-  const user = store.getUserByEmail(email);
+app.post("/api/auth/login", requireJsonBody, async (req, res) => {
+  const email = textField(req.body?.email);
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const user = email ? await store.getUserByEmail(email) : null;
 
   if (!user) {
     return sendApiError(res, 401, "Invalid email or password.");
@@ -386,12 +616,7 @@ app.post("/api/auth/login", async (req, res) => {
     return sendApiError(res, 401, "Invalid email or password.");
   }
 
-  req.session.user = {
-    id: user.id,
-    surname: user.surname,
-    otherNames: user.otherNames,
-    email: user.email,
-  };
+  await startSession(req, "user", studentSessionFor(user));
 
   return sendApiSuccess(res, {
     message: "Welcome back.",
@@ -400,43 +625,35 @@ app.post("/api/auth/login", async (req, res) => {
   });
 });
 
-app.post("/api/auth/logout", (req, res) => {
-  req.session.destroy(() => {
+app.post("/api/auth/logout", (req, res, next) => {
+  req.session.destroy((error) => {
+    if (error) return next(error);
     res.status(200).json({ ok: true, message: "Logged out." });
   });
 });
 
-app.get("/api/programs", requireApiAuth, (req, res) => {
+app.get("/api/programs", requireApiAuth, async (req, res) => {
   return sendApiSuccess(res, {
-    programs: store.listPrograms(),
+    programs: await store.listPrograms(),
   });
 });
 
-app.get("/api/pre-application", requireApiAuth, (req, res) => {
+app.get("/api/pre-application", requireApiAuth, async (req, res) => {
   return sendApiSuccess(res, {
-    programs: store.listPrograms(),
-    previous: store.getApplicationByUserId(req.session.user.id),
+    programs: await store.listPrograms(),
+    previous: await store.getApplicationByUserId(req.session.user.id),
   });
 });
 
-app.post("/api/pre-application", requireApiAuth, (req, res) => {
-  const { programId, modeOfStudy, previousInstitution, notes } = req.body || {};
-
-  if (!programId || !modeOfStudy || !previousInstitution) {
-    return sendApiError(res, 400, "Program, mode of study, and previous institution are required.");
+app.post("/api/pre-application", requireApiAuth, async (req, res) => {
+  const { values, error } = await validatePreApplication(req.body || {});
+  if (error) {
+    return sendApiError(res, 400, error);
   }
 
-  const selectedProgram = store.getProgramById(programId);
-  if (!selectedProgram) {
-    return sendApiError(res, 400, "Selected program is invalid.");
-  }
-
-  store.createOrUpdateApplication({
+  await store.createOrUpdateApplication({
     userId: req.session.user.id,
-    programId,
-    modeOfStudy,
-    previousInstitution,
-    notes: notes || "",
+    ...values,
   });
 
   return sendApiSuccess(res, {
@@ -445,13 +662,13 @@ app.post("/api/pre-application", requireApiAuth, (req, res) => {
   });
 });
 
-app.post("/api/invoice/create", requireApiAuth, (req, res) => {
-  const application = store.getApplicationByUserId(req.session.user.id);
+app.post("/api/invoice/create", requireApiAuth, async (req, res) => {
+  const application = await store.getApplicationByUserId(req.session.user.id);
   if (!application) {
     return sendApiError(res, 400, "Please complete pre-application first.", { next: "/pre-application" });
   }
 
-  const existingInvoice = store.getLatestInvoiceByUserId(req.session.user.id);
+  const existingInvoice = await store.getLatestInvoiceByUserId(req.session.user.id);
   if (existingInvoice) {
     return sendApiSuccess(res, {
       invoice: existingInvoice,
@@ -459,7 +676,7 @@ app.post("/api/invoice/create", requireApiAuth, (req, res) => {
     });
   }
 
-  const invoice = store.createInvoice({
+  const invoice = await store.createInvoice({
     userId: req.session.user.id,
     amount: APPLICATION_FEE_AMOUNT,
     feeDescription: APPLICATION_FEE_DESCRIPTION,
@@ -473,96 +690,199 @@ app.post("/api/invoice/create", requireApiAuth, (req, res) => {
   });
 });
 
-app.get("/api/invoice/:invoiceNumber", requireApiAuth, (req, res) => {
-  const invoice = store.getInvoiceByNumber(req.params.invoiceNumber);
+app.get("/api/invoice/:invoiceNumber", requireApiAuth, async (req, res) => {
+  const invoice = await store.getInvoiceByNumber(req.params.invoiceNumber);
   if (!invoice || invoice.userId !== req.session.user.id) {
     return sendApiError(res, 404, "Invoice not found.");
   }
 
-  const user = store.getUserById(req.session.user.id);
-  const application = store.getApplicationByUserId(req.session.user.id);
-  const program = application ? store.getProgramById(application.programId) : null;
+  const { user, application, program, document } = await loadInvoiceDocument(invoice);
 
   return sendApiSuccess(res, {
     invoice,
-    user,
+    user: publicUser(user),
     application,
     program,
+    document,
+    checkout: {
+      enabled: (MOCK_GATEWAY_ENABLED || Boolean(PAYSTACK_SECRET_KEY)) && invoice.paymentStatus !== "Paid" && invoice.amount > 0,
+      noAmountDue: !(invoice.amount > 0),
+      mode: MOCK_GATEWAY_ENABLED ? "test" : PAYSTACK_SECRET_KEY ? "paystack" : "unavailable",
+      testCards: MOCK_GATEWAY_ENABLED ? PUBLIC_TEST_CARDS : [],
+    },
   });
 });
 
-app.post("/api/invoice/:invoiceNumber/pay", requireApiAuth, (req, res) => {
-  const invoice = store.getInvoiceByNumber(req.params.invoiceNumber);
+app.get("/api/invoice/:invoiceNumber/pdf", requireApiAuth, async (req, res) => {
+  const invoice = await store.getInvoiceByNumber(req.params.invoiceNumber);
+  if (!invoice || invoice.userId !== req.session.user.id) {
+    return sendApiError(res, 404, "Invoice not found.");
+  }
+
+  return sendInvoicePdf(res, invoice);
+});
+
+// Card checkout (test mode). The applicant submits card details only; the
+// amount comes from the stored invoice and the Paid status is set by the
+// gateway's signed webhook, never by this request.
+app.post("/api/invoice/:invoiceNumber/checkout", requireApiAuth, async (req, res) => {
+  const invoice = await store.getInvoiceByNumber(req.params.invoiceNumber);
   if (!invoice || invoice.userId !== req.session.user.id) {
     return sendApiError(res, 404, "Invoice not found.");
   }
 
   if (invoice.paymentStatus === "Paid") {
-    return sendApiError(res, 400, "This invoice has already been paid.", {
-      next: `/invoice/${invoice.invoiceNumber}`,
+    return sendApiError(res, 409, "This invoice has already been paid.");
+  }
+
+  if (!(invoice.amount > 0)) {
+    return sendApiError(res, 400, "There is no amount due on this invoice. Contact the admissions office.");
+  }
+
+  if (MOCK_GATEWAY_ENABLED) {
+    const { card, error } = validateCard(req.body || {});
+    if (error) {
+      return sendApiError(res, 400, error);
+    }
+
+    await store.createAuditLog({
+      invoiceNumber: invoice.invoiceNumber,
+      actorType: "user",
+      actorId: req.session.user.id,
+      actorLabel: `Applicant: ${req.session.user.email}`,
+      action: "checkout_initiated",
+      beforeStatus: invoice.paymentStatus,
+      afterStatus: invoice.paymentStatus,
+      note: `Card checkout started (${card.brand} ending ${card.last4}). Status unchanged until the gateway confirms.`,
+      metadata: { gateway: "mock" },
+    });
+
+    const charge = await mockGateway.charge({ invoice, card });
+
+    if (!charge.success) {
+      return sendApiError(res, 402, `Payment declined: ${charge.declineReason}`, {
+        reference: charge.reference,
+      });
+    }
+
+    if (charge.webhook.outcome !== "marked_paid" && charge.webhook.outcome !== "already_paid") {
+      return sendApiError(res, 502, `Payment could not be verified: ${charge.webhook.message}`, {
+        reference: charge.reference,
+      });
+    }
+
+    const updated = await store.getInvoiceByNumber(invoice.invoiceNumber);
+    return sendApiSuccess(res, {
+      message: `Payment successful. Reference: ${charge.reference}`,
+      invoice: updated,
+      document: (await loadInvoiceDocument(updated)).document,
     });
   }
 
-  const reference = `MOCK-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
-  store.recordPaymentTransaction({
-    invoiceNumber: invoice.invoiceNumber,
-    userId: invoice.userId,
-    provider: "mock",
-    eventType: "mock.charge.success",
-    gatewayStatus: "success",
-    gatewayReference: reference,
-    amount: invoice.amount,
-    currency: invoice.currency,
-    signatureValid: true,
-    payload: {
-      invoiceNumber: invoice.invoiceNumber,
+  if (!PAYSTACK_SECRET_KEY) {
+    return sendApiError(res, 503, "Online payment is not configured. Contact the finance office.");
+  }
+
+  const amountMinor = Math.round(Number(invoice.amount) * 100);
+  if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+    return sendApiError(res, 400, "The invoice amount cannot be processed as a Paystack payment.");
+  }
+  let callbackUrl;
+  try {
+    const baseUrl = PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
+    callbackUrl = new URL("/payments/callback", baseUrl).toString();
+  } catch {
+    return sendApiError(res, 503, "Online payment callback URL is not configured.");
+  }
+
+  const reference = `ODFEL-${crypto.randomUUID()}`;
+  try {
+    const checkout = await paystackClient.initializeTransaction({
+      email: req.session.user.email,
+      amount: amountMinor,
+      currency: invoice.currency,
       reference,
+      callbackUrl,
+      metadata: { invoiceNumber: invoice.invoiceNumber },
+    });
+    await store.recordPaymentTransaction({
+      invoiceNumber: invoice.invoiceNumber,
+      userId: req.session.user.id,
+      provider: "paystack",
+      eventType: "transaction.initialize",
+      gatewayStatus: "initialized",
+      gatewayReference: checkout.reference,
+      amount: invoice.amount,
+      currency: invoice.currency,
+      signatureValid: false,
+      payload: { reference: checkout.reference },
+      processingNote: "Hosted Paystack checkout initialized; payment is not confirmed.",
+    });
+    await store.createAuditLog({
+      invoiceNumber: invoice.invoiceNumber,
+      actorType: "user",
+      actorId: req.session.user.id,
+      actorLabel: `Applicant: ${req.session.user.email}`,
+      action: "checkout_initiated",
+      beforeStatus: invoice.paymentStatus,
+      afterStatus: invoice.paymentStatus,
+      note: "Hosted Paystack checkout initialized. Status remains unchanged until payment verification.",
+      metadata: { gateway: "paystack", reference: checkout.reference },
+    });
+    return sendApiSuccess(res, {
+      checkoutUrl: checkout.checkoutUrl,
+      reference: checkout.reference,
+      message: "Continue to Paystack to complete payment.",
+    });
+  } catch (error) {
+    console.error("Paystack checkout initialization failed.", error);
+    return sendApiError(res, 502, "Could not start online payment. Please try again or contact the finance office.");
+  }
+});
+
+// Applicants may not declare their own invoice paid. Payment status changes only
+// through a verified gateway webhook (see /api/invoice/:n/checkout and
+// /webhooks/payments) or an admin with payments:write.
+app.post("/api/invoice/:invoiceNumber/pay", async (req, res) => {
+  return sendApiError(res, 403, SELF_PAY_FORBIDDEN_MESSAGE);
+});
+
+app.get("/api/dashboard", requireApiAuth, async (req, res) => {
+  const snapshot = await store.getDashboardByUserId(req.session.user.id);
+  return sendApiSuccess(res, {
+    snapshot: {
+      ...snapshot,
+      user: publicUser(snapshot.user),
+      // Applicants see their verified gateway events only (not rejected/forged
+      // webhook attempts) and never the raw gateway payload.
+      paymentHistory: snapshot.paymentHistory
+        .filter((tx) => tx.signatureValid)
+        .map(({ payloadJson, userId, ...tx }) => tx),
     },
-    processingNote: "Local mock payment completed.",
-    processedAt: new Date().toISOString(),
-  });
-
-  const updated = store.markInvoicePaid(invoice.invoiceNumber, reference, {
-    paymentProvider: "mock",
-    actorType: "user",
-    actorId: req.session.user.id,
-    action: "mock_payment",
-    note: "Invoice paid via local mock action.",
-  });
-
-  return sendApiSuccess(res, {
-    message: `Payment successful. Reference: ${reference}`,
-    invoice: updated,
-    next: "/dashboard",
   });
 });
 
-app.get("/api/dashboard", requireApiAuth, (req, res) => {
-  return sendApiSuccess(res, {
-    snapshot: store.getDashboardByUserId(req.session.user.id),
-  });
-});
-
-app.get("/api/admin/session", (req, res) => {
+app.get("/api/admin/session", async (req, res) => {
   return sendApiSuccess(res, {
     admin: req.session.admin || null,
   });
 });
 
-app.post("/api/admin/login", (req, res) => {
-  const { username, password } = req.body || {};
+app.post("/api/admin/login", async (req, res) => {
+  const username = textField(req.body?.username);
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
 
-  const admin = store.getAdminByUsername(username);
+  const admin = username ? await store.getAdminByUsername(username) : null;
   if (!admin) {
     return sendApiError(res, 401, "Invalid admin credentials.");
   }
 
-  const ok = bcrypt.compareSync(String(password || ""), admin.passwordHash);
+  const ok = bcrypt.compareSync(password, admin.passwordHash);
   if (!ok) {
     return sendApiError(res, 401, "Invalid admin credentials.");
   }
 
-  req.session.admin = buildAdminSession(admin);
+  await startSession(req, "admin", buildAdminSession(admin));
 
   if (req.session.admin.mustChangePassword) {
     return sendApiSuccess(res, {
@@ -579,12 +899,14 @@ app.post("/api/admin/login", (req, res) => {
   });
 });
 
-app.post("/api/admin/logout", (req, res) => {
-  delete req.session.admin;
-  return sendApiSuccess(res, { message: "Admin logged out." });
+app.post("/api/admin/logout", (req, res, next) => {
+  req.session.destroy((error) => {
+    if (error) return next(error);
+    return sendApiSuccess(res, { message: "Admin logged out." });
+  });
 });
 
-app.post("/api/admin/change-password", requireApiAdminSession, (req, res) => {
+app.post("/api/admin/change-password", requireApiAdminSession, async (req, res) => {
   const currentPassword = String(req.body.currentPassword || "");
   const newPassword = String(req.body.newPassword || "");
   const confirmPassword = String(req.body.confirmPassword || "");
@@ -597,7 +919,7 @@ app.post("/api/admin/change-password", requireApiAdminSession, (req, res) => {
     return sendApiError(res, 400, "New password and confirmation do not match.");
   }
 
-  const result = store.changeOwnAdminPassword({
+  const result = await store.changeOwnAdminPassword({
     adminId: req.session.admin.id,
     currentPassword,
     newPassword,
@@ -617,15 +939,15 @@ app.post("/api/admin/change-password", requireApiAdminSession, (req, res) => {
   });
 });
 
-app.get("/api/admin/users", requireApiAdminPermission("admin-users:manage"), (req, res) => {
+app.get("/api/admin/users", requireApiAdminPermission("admin-users:manage"), async (req, res) => {
   return sendApiSuccess(res, {
     currentAdmin: req.session.admin,
     roles: Object.keys(ROLE_PERMISSIONS),
-    admins: store.listAdminUsers(),
+    admins: await store.listAdminUsers(),
   });
 });
 
-app.post("/api/admin/users", requireApiAdminPermission("admin-users:manage"), (req, res) => {
+app.post("/api/admin/users", requireApiAdminPermission("admin-users:manage"), async (req, res) => {
   const username = String(req.body.username || "").trim();
   const password = String(req.body.password || "");
   const role = String(req.body.role || "").trim();
@@ -634,7 +956,7 @@ app.post("/api/admin/users", requireApiAdminPermission("admin-users:manage"), (r
     return sendApiError(res, 400, "Invalid admin role selected.");
   }
 
-  const result = store.createAdminUser({ username, password, role });
+  const result = await store.createAdminUser({ username, password, role });
   if (result.error) {
     return sendApiError(res, 400, result.error);
   }
@@ -648,7 +970,7 @@ app.post("/api/admin/users", requireApiAdminPermission("admin-users:manage"), (r
 app.post(
   "/api/admin/users/:adminId/toggle-active",
   requireApiAdminPermission("admin-users:manage"),
-  (req, res) => {
+  async (req, res) => {
     const adminId = req.params.adminId;
     const makeActive = String(req.body.makeActive || "").trim() === "1";
 
@@ -656,7 +978,7 @@ app.post(
       return sendApiError(res, 400, "You cannot deactivate your own account while logged in.");
     }
 
-    const updated = store.setAdminActive(adminId, makeActive);
+    const updated = await store.setAdminActive(adminId, makeActive);
     if (!updated) {
       return sendApiError(res, 404, "Admin account not found.");
     }
@@ -668,7 +990,7 @@ app.post(
   }
 );
 
-app.post("/api/admin/users/:adminId/role", requireApiAdminPermission("admin-users:manage"), (req, res) => {
+app.post("/api/admin/users/:adminId/role", requireApiAdminPermission("admin-users:manage"), async (req, res) => {
   const adminId = req.params.adminId;
   const role = String(req.body.role || "").trim();
 
@@ -676,7 +998,7 @@ app.post("/api/admin/users/:adminId/role", requireApiAdminPermission("admin-user
     return sendApiError(res, 400, "Invalid role value.");
   }
 
-  const updated = store.updateAdminRole(adminId, role);
+  const updated = await store.updateAdminRole(adminId, role);
   if (!updated) {
     return sendApiError(res, 404, "Admin account not found.");
   }
@@ -691,11 +1013,11 @@ app.post("/api/admin/users/:adminId/role", requireApiAdminPermission("admin-user
   });
 });
 
-app.post("/api/admin/users/:adminId/password", requireApiAdminPermission("admin-users:manage"), (req, res) => {
+app.post("/api/admin/users/:adminId/password", requireApiAdminPermission("admin-users:manage"), async (req, res) => {
   const adminId = req.params.adminId;
   const password = String(req.body.password || "");
 
-  const result = store.resetAdminPassword(adminId, password);
+  const result = await store.resetAdminPassword(adminId, password);
   if (result.error) {
     return sendApiError(res, 400, result.error);
   }
@@ -706,9 +1028,9 @@ app.post("/api/admin/users/:adminId/password", requireApiAdminPermission("admin-
   });
 });
 
-app.get("/api/admin/payments", requireApiAdminPermission("payments:view"), (req, res) => {
-  const status = String(req.query.status || "").trim();
-  const q = String(req.query.q || "").trim();
+app.get("/api/admin/payments", requireApiAdminPermission("payments:view"), async (req, res) => {
+  const status = textField(req.query.status);
+  const q = textField(req.query.q);
 
   return sendApiSuccess(res, {
     filters: { status, q },
@@ -716,15 +1038,24 @@ app.get("/api/admin/payments", requireApiAdminPermission("payments:view"), (req,
     canManageAdmins: hasPermission(req.session.admin, "admin-users:manage"),
     canWrite: hasPermission(req.session.admin, "payments:write"),
     canReconcile: hasPermission(req.session.admin, "payments:reconcile"),
-    invoices: store.listInvoicesForAdmin({ status, q }),
-    transactions: store.listRecentPaymentTransactions(100),
-    audits: store.listRecentAuditLogs(100),
-    reconciliation: store.getReconciliationReport(),
+    invoices: await store.listInvoicesForAdmin({ status, q }),
+    transactions: await store.listRecentPaymentTransactions(100),
+    audits: await store.listRecentAuditLogs(100),
+    reconciliation: await store.getReconciliationReport(),
   });
 });
 
-app.post("/api/admin/reconcile", requireApiAdminPermission("payments:reconcile"), (req, res) => {
-  const result = store.autoReconcileInvoices(req.session.admin.username);
+// Lets finance staff open the exact invoice/receipt the applicant sees.
+app.get("/api/admin/invoices/:invoiceNumber/pdf", requireApiAdminPermission("payments:view"), async (req, res) => {
+  const invoice = await store.getInvoiceByNumber(req.params.invoiceNumber);
+  if (!invoice) {
+    return sendApiError(res, 404, "Invoice not found.");
+  }
+  return sendInvoicePdf(res, invoice, { inline: true });
+});
+
+app.post("/api/admin/reconcile", requireApiAdminPermission("payments:reconcile"), async (req, res) => {
+  const result = await store.autoReconcileInvoices(req.session.admin.username, adminActorLabel(req.session.admin));
   return sendApiSuccess(res, {
     message: `Reconciliation complete: ${result.updated} updated, ${result.mismatches} mismatch(es) detected, ${result.paidWithoutTx} paid-without-tx.`,
     result,
@@ -734,25 +1065,23 @@ app.post("/api/admin/reconcile", requireApiAdminPermission("payments:reconcile")
 app.post(
   "/api/admin/invoices/:invoiceNumber/override",
   requireApiAdminPermission("payments:write"),
-  (req, res) => {
+  async (req, res) => {
     const invoiceNumber = req.params.invoiceNumber;
-    const status = String(req.body.status || "").trim();
-    const paymentReference = String(req.body.paymentReference || "").trim() || null;
-    const paymentProvider = String(req.body.paymentProvider || "").trim() || null;
-    const note = String(req.body.note || "").trim() || null;
-    const allowed = ["Paid", "Unpaid", "Pending", "Failed"];
-
-    if (!allowed.includes(status)) {
-      return sendApiError(res, 400, "Invalid status selection for manual override.");
+    const { values, error } = parseOverrideRequest(req.body || {});
+    if (error) {
+      return sendApiError(res, 400, error);
     }
+    const { status, paymentReference, paymentProvider, note } = values;
 
-    const updated = store.manualOverrideInvoice({
+    const updated = await store.manualOverrideInvoice({
       invoiceNumber,
       status,
       paymentReference,
-      paymentProvider,
+      paymentProvider: paymentProvider || (status === "Paid" ? "manual" : null),
       actorId: req.session.admin.username,
+      actorLabel: adminActorLabel(req.session.admin),
       note,
+      metadata: { adminId: req.session.admin.id, role: req.session.admin.role },
     });
 
     if (!updated) {
@@ -766,52 +1095,49 @@ app.post(
   }
 );
 
-app.get("/", serveReactApp, (req, res) => {
-  return res.status(503).send("React build not found. Run npm run unified:build.");
-});
+app.get("/", servePage);
 
-app.get("/register", (req, res) => {
-  return serveReactApp(req, res, () => {
-    return res.status(503).send("React build not found. Run npm run unified:build.");
-  });
+app.get("/register", async (req, res) => {
+  return servePage(req, res);
 });
 
 app.post("/register", async (req, res) => {
-  const { surname, otherNames, email, phone, password } = req.body;
-
-  if (!surname || !otherNames || !email || !phone || !password) {
-    req.session.message = "All registration fields are required.";
+  const { values, error } = validateRegistration(req.body || {});
+  if (error) {
+    req.session.message = error;
     return res.redirect("/register");
   }
+  const { surname, otherNames, email, phone, password } = values;
 
-  if (store.getUserByEmail(email)) {
+  if (await store.getUserByEmail(email)) {
     req.session.message = "An account with this email already exists.";
     return res.redirect("/register");
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = store.createUser({ surname, otherNames, email, phone, passwordHash });
+  let user;
+  try {
+    user = await store.createUser({ surname, otherNames, email, phone, passwordHash });
+  } catch (error) {
+    if (error.code !== "DUPLICATE_EMAIL" && error.errcode !== 2067) throw error;
+    req.session.message = "An account with this email already exists.";
+    return res.redirect("/register");
+  }
 
-  req.session.user = {
-    id: user.id,
-    surname: user.surname,
-    otherNames: user.otherNames,
-    email: user.email,
-  };
+  await startSession(req, "user", studentSessionFor(user));
   req.session.message = "Account created successfully.";
 
   return res.redirect("/pre-application");
 });
 
-app.get("/login", (req, res) => {
-  return serveReactApp(req, res, () => {
-    return res.status(503).send("React build not found. Run npm run unified:build.");
-  });
+app.get("/login", async (req, res) => {
+  return servePage(req, res);
 });
 
 app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-  const user = store.getUserByEmail(email);
+  const email = textField(req.body?.email);
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  const user = email ? await store.getUserByEmail(email) : null;
 
   if (!user) {
     req.session.message = "Invalid email or password.";
@@ -824,68 +1150,52 @@ app.post("/login", async (req, res) => {
     return res.redirect("/login");
   }
 
-  req.session.user = {
-    id: user.id,
-    surname: user.surname,
-    otherNames: user.otherNames,
-    email: user.email,
-  };
+  await startSession(req, "user", studentSessionFor(user));
   req.session.message = "Welcome back.";
 
   return res.redirect("/dashboard");
 });
 
-app.post("/logout", (req, res) => {
-  req.session.destroy(() => {
+app.post("/logout", (req, res, next) => {
+  req.session.destroy((error) => {
+    if (error) return next(error);
     res.redirect("/");
   });
 });
 
-app.get("/pre-application", requireAuth, (req, res) => {
-  return serveReactApp(req, res, () => {
-    return res.status(503).send("React build not found. Run npm run unified:build.");
-  });
+app.get("/pre-application", requireAuth, async (req, res) => {
+  return servePage(req, res);
 });
 
-app.post("/pre-application", requireAuth, (req, res) => {
-  const { programId, modeOfStudy, previousInstitution, notes } = req.body;
-
-  if (!programId || !modeOfStudy || !previousInstitution) {
-    req.session.message = "Program, mode of study, and previous institution are required.";
+app.post("/pre-application", requireAuth, async (req, res) => {
+  const { values, error } = await validatePreApplication(req.body || {});
+  if (error) {
+    req.session.message = error;
     return res.redirect("/pre-application");
   }
 
-  const selectedProgram = store.getProgramById(programId);
-  if (!selectedProgram) {
-    req.session.message = "Selected program is invalid.";
-    return res.redirect("/pre-application");
-  }
-
-  store.createOrUpdateApplication({
+  await store.createOrUpdateApplication({
     userId: req.session.user.id,
-    programId,
-    modeOfStudy,
-    previousInstitution,
-    notes: notes || "",
+    ...values,
   });
 
   req.session.message = "Pre-application saved successfully.";
   return res.redirect("/invoice/create");
 });
 
-app.get("/invoice/create", requireAuth, (req, res) => {
-  const application = store.getApplicationByUserId(req.session.user.id);
+app.get("/invoice/create", requireAuth, async (req, res) => {
+  const application = await store.getApplicationByUserId(req.session.user.id);
   if (!application) {
     req.session.message = "Please complete pre-application first.";
     return res.redirect("/pre-application");
   }
 
-  const existingInvoice = store.getLatestInvoiceByUserId(req.session.user.id);
+  const existingInvoice = await store.getLatestInvoiceByUserId(req.session.user.id);
   if (existingInvoice) {
     return res.redirect(`/invoice/${existingInvoice.invoiceNumber}`);
   }
 
-  const invoice = store.createInvoice({
+  const invoice = await store.createInvoice({
     userId: req.session.user.id,
     amount: APPLICATION_FEE_AMOUNT,
     feeDescription: APPLICATION_FEE_DESCRIPTION,
@@ -896,143 +1206,72 @@ app.get("/invoice/create", requireAuth, (req, res) => {
   return res.redirect(`/invoice/${invoice.invoiceNumber}`);
 });
 
-app.get("/invoice/:invoiceNumber", requireAuth, (req, res) => {
-  const invoice = store.getInvoiceByNumber(req.params.invoiceNumber);
+app.get("/invoice/:invoiceNumber", requireAuth, async (req, res) => {
+  const invoice = await store.getInvoiceByNumber(req.params.invoiceNumber);
   if (!invoice || invoice.userId !== req.session.user.id) {
     req.session.message = "Invoice not found.";
     return res.redirect("/dashboard");
   }
 
-  return serveReactApp(req, res, () => {
-    return res.status(503).send("React build not found. Run npm run unified:build.");
-  });
+  return servePage(req, res);
 });
 
-app.post("/invoice/:invoiceNumber/pay", requireAuth, (req, res) => {
-  const invoice = store.getInvoiceByNumber(req.params.invoiceNumber);
-  if (!invoice || invoice.userId !== req.session.user.id) {
-    req.session.message = "Invoice not found.";
-    return res.redirect("/dashboard");
-  }
-
-  if (invoice.paymentStatus === "Paid") {
-    req.session.message = "This invoice has already been paid.";
-    return res.redirect(`/invoice/${invoice.invoiceNumber}`);
-  }
-
-  const reference = `MOCK-${Date.now()}-${Math.floor(Math.random() * 900 + 100)}`;
-  store.recordPaymentTransaction({
-    invoiceNumber: invoice.invoiceNumber,
-    userId: invoice.userId,
-    provider: "mock",
-    eventType: "mock.charge.success",
-    gatewayStatus: "success",
-    gatewayReference: reference,
-    amount: invoice.amount,
-    currency: invoice.currency,
-    signatureValid: true,
-    payload: {
-      invoiceNumber: invoice.invoiceNumber,
-      reference,
-    },
-    processingNote: "Local mock payment completed.",
-    processedAt: new Date().toISOString(),
-  });
-
-  store.markInvoicePaid(invoice.invoiceNumber, reference, {
-    paymentProvider: "mock",
-    actorType: "user",
-    actorId: req.session.user.id,
-    action: "mock_payment",
-    note: "Invoice paid via local mock action.",
-  });
-
-  req.session.message = `Payment successful. Reference: ${reference}`;
-
-  return res.redirect(`/invoice/${invoice.invoiceNumber}`);
+app.post("/invoice/:invoiceNumber/pay", async (req, res) => {
+  return res.status(403).send(SELF_PAY_FORBIDDEN_MESSAGE);
 });
 
-app.post("/webhooks/payments", express.raw({ type: "application/json" }), (req, res) => {
-  const provider = detectWebhookProvider(req.headers);
-  const signatureValid = verifyWebhookSignature(provider, req.headers, req.body);
+app.get("/payments/callback", async (req, res) => {
+  const reference = typeof req.query.reference === "string" ? req.query.reference : "";
+  if (!PAYSTACK_SECRET_KEY || !reference) return res.redirect("/dashboard?payment=not-confirmed");
 
-  let payload;
   try {
-    payload = JSON.parse(Buffer.from(req.body).toString("utf8"));
-  } catch {
-    return res.status(400).send("Invalid JSON payload.");
+    const transaction = await paystackClient.verifyTransaction(reference);
+    if (transaction.reference !== reference) throw new Error("Paystack returned a different transaction reference.");
+    const result = await webhookProcessor.processVerifiedPaystackTransaction(transaction);
+    let metadata = transaction.metadata && typeof transaction.metadata === "object"
+      ? transaction.metadata
+      : {};
+    if (typeof transaction.metadata === "string") {
+      try {
+        metadata = JSON.parse(transaction.metadata);
+      } catch {
+        metadata = {};
+      }
+    }
+    const invoiceNumber = typeof metadata.invoiceNumber === "string" ? metadata.invoiceNumber : "";
+    const invoice = invoiceNumber ? await store.getInvoiceByNumber(invoiceNumber) : null;
+    if (!invoice || invoice.userId !== req.session.user?.id) return res.redirect("/login");
+    const payment = result.outcome === "marked_paid" || result.outcome === "already_paid"
+      ? "success"
+      : "pending";
+    return res.redirect(`/invoice/${encodeURIComponent(invoice.invoiceNumber)}?payment=${payment}`);
+  } catch (error) {
+    console.error("Paystack callback verification failed.", error);
+    return res.redirect("/dashboard?payment=verification-failed");
   }
-
-  const parsed = parseWebhookPayload(provider, payload);
-  const invoice = parsed.invoiceNumber ? store.getInvoiceByNumber(parsed.invoiceNumber) : null;
-
-  store.recordPaymentTransaction({
-    invoiceNumber: parsed.invoiceNumber,
-    userId: invoice ? invoice.userId : null,
-    provider,
-    eventType: parsed.eventType,
-    gatewayStatus: store.normalizeGatewayStatus(parsed.gatewayStatus),
-    gatewayReference: parsed.gatewayReference,
-    amount: parsed.amount,
-    currency: parsed.currency,
-    signatureValid,
-    payload,
-    processingNote: signatureValid ? "Webhook signature verified." : "Webhook signature verification failed.",
-    processedAt: new Date().toISOString(),
-  });
-
-  if (!signatureValid) {
-    return res.status(401).send("Invalid webhook signature.");
-  }
-
-  if (!invoice) {
-    return res.status(202).send("Webhook accepted. Invoice not matched.");
-  }
-
-  if (store.isSuccessGatewayStatus(parsed.gatewayStatus)) {
-    store.markInvoicePaid(invoice.invoiceNumber, parsed.gatewayReference || invoice.paymentReference || null, {
-      paymentProvider: provider,
-      actorType: "webhook",
-      actorId: provider,
-      action: "gateway_webhook_success",
-      note: `Gateway webhook marked invoice as paid (${provider}).`,
-      metadata: {
-        eventType: parsed.eventType,
-      },
-    });
-  }
-
-  return res.status(200).send("Webhook accepted.");
 });
 
-app.get("/payments/callback", (req, res) => {
-  return res
-    .status(410)
-    .send("Deprecated endpoint. Use signed POST webhook at /webhooks/payments.");
+app.get("/admin/login", async (req, res) => {
+  return servePage(req, res);
 });
 
-app.get("/admin/login", (req, res) => {
-  return serveReactApp(req, res, () => {
-    return res.status(503).send("React build not found. Run npm run unified:build.");
-  });
-});
+app.post("/admin/login", async (req, res) => {
+  const username = textField(req.body?.username);
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
 
-app.post("/admin/login", (req, res) => {
-  const { username, password } = req.body;
-
-  const admin = store.getAdminByUsername(username);
+  const admin = username ? await store.getAdminByUsername(username) : null;
   if (!admin) {
     req.session.message = "Invalid admin credentials.";
     return res.redirect("/admin/login");
   }
 
-  const ok = bcrypt.compareSync(String(password || ""), admin.passwordHash);
+  const ok = bcrypt.compareSync(password, admin.passwordHash);
   if (!ok) {
     req.session.message = "Invalid admin credentials.";
     return res.redirect("/admin/login");
   }
 
-  req.session.admin = buildAdminSession(admin);
+  await startSession(req, "admin", buildAdminSession(admin));
 
   if (req.session.admin.mustChangePassword) {
     req.session.message = "Password update required before you can access admin tools.";
@@ -1043,13 +1282,11 @@ app.post("/admin/login", (req, res) => {
   return res.redirect("/admin/payments");
 });
 
-app.get("/admin/change-password", requireAdminSession, (req, res) => {
-  return serveReactApp(req, res, () => {
-    return res.status(503).send("React build not found. Run npm run unified:build.");
-  });
+app.get("/admin/change-password", requireAdminSession, async (req, res) => {
+  return servePage(req, res);
 });
 
-app.post("/admin/change-password", requireAdminSession, (req, res) => {
+app.post("/admin/change-password", requireAdminSession, async (req, res) => {
   const currentPassword = String(req.body.currentPassword || "");
   const newPassword = String(req.body.newPassword || "");
   const confirmPassword = String(req.body.confirmPassword || "");
@@ -1064,7 +1301,7 @@ app.post("/admin/change-password", requireAdminSession, (req, res) => {
     return res.redirect("/admin/change-password");
   }
 
-  const result = store.changeOwnAdminPassword({
+  const result = await store.changeOwnAdminPassword({
     adminId: req.session.admin.id,
     currentPassword,
     newPassword,
@@ -1081,19 +1318,18 @@ app.post("/admin/change-password", requireAdminSession, (req, res) => {
   return res.redirect("/admin/payments");
 });
 
-app.post("/admin/logout", (req, res) => {
-  delete req.session.admin;
-  req.session.message = "Admin logged out.";
-  return res.redirect("/admin/login");
-});
-
-app.get("/admin/users", requireAdminPermission("admin-users:manage"), (req, res) => {
-  return serveReactApp(req, res, () => {
-    return res.status(503).send("React build not found. Run npm run unified:build.");
+app.post("/admin/logout", (req, res, next) => {
+  req.session.destroy((error) => {
+    if (error) return next(error);
+    return res.redirect("/admin/login");
   });
 });
 
-app.post("/admin/users", requireAdminPermission("admin-users:manage"), (req, res) => {
+app.get("/admin/users", requireAdminPermission("admin-users:manage"), async (req, res) => {
+  return servePage(req, res);
+});
+
+app.post("/admin/users", requireAdminPermission("admin-users:manage"), async (req, res) => {
   const username = String(req.body.username || "").trim();
   const password = String(req.body.password || "");
   const role = String(req.body.role || "").trim();
@@ -1103,7 +1339,7 @@ app.post("/admin/users", requireAdminPermission("admin-users:manage"), (req, res
     return res.redirect("/admin/users");
   }
 
-  const result = store.createAdminUser({ username, password, role });
+  const result = await store.createAdminUser({ username, password, role });
   if (result.error) {
     req.session.message = result.error;
     return res.redirect("/admin/users");
@@ -1113,7 +1349,7 @@ app.post("/admin/users", requireAdminPermission("admin-users:manage"), (req, res
   return res.redirect("/admin/users");
 });
 
-app.post("/admin/users/:adminId/toggle-active", requireAdminPermission("admin-users:manage"), (req, res) => {
+app.post("/admin/users/:adminId/toggle-active", requireAdminPermission("admin-users:manage"), async (req, res) => {
   const adminId = req.params.adminId;
   const makeActive = String(req.body.makeActive || "").trim() === "1";
 
@@ -1122,7 +1358,7 @@ app.post("/admin/users/:adminId/toggle-active", requireAdminPermission("admin-us
     return res.redirect("/admin/users");
   }
 
-  const updated = store.setAdminActive(adminId, makeActive);
+  const updated = await store.setAdminActive(adminId, makeActive);
   if (!updated) {
     req.session.message = "Admin account not found.";
     return res.redirect("/admin/users");
@@ -1132,7 +1368,7 @@ app.post("/admin/users/:adminId/toggle-active", requireAdminPermission("admin-us
   return res.redirect("/admin/users");
 });
 
-app.post("/admin/users/:adminId/role", requireAdminPermission("admin-users:manage"), (req, res) => {
+app.post("/admin/users/:adminId/role", requireAdminPermission("admin-users:manage"), async (req, res) => {
   const adminId = req.params.adminId;
   const role = String(req.body.role || "").trim();
 
@@ -1141,7 +1377,7 @@ app.post("/admin/users/:adminId/role", requireAdminPermission("admin-users:manag
     return res.redirect("/admin/users");
   }
 
-  const updated = store.updateAdminRole(adminId, role);
+  const updated = await store.updateAdminRole(adminId, role);
   if (!updated) {
     req.session.message = "Admin account not found.";
     return res.redirect("/admin/users");
@@ -1155,11 +1391,11 @@ app.post("/admin/users/:adminId/role", requireAdminPermission("admin-users:manag
   return res.redirect("/admin/users");
 });
 
-app.post("/admin/users/:adminId/password", requireAdminPermission("admin-users:manage"), (req, res) => {
+app.post("/admin/users/:adminId/password", requireAdminPermission("admin-users:manage"), async (req, res) => {
   const adminId = req.params.adminId;
   const password = String(req.body.password || "");
 
-  const result = store.resetAdminPassword(adminId, password);
+  const result = await store.resetAdminPassword(adminId, password);
   if (result.error) {
     req.session.message = result.error;
     return res.redirect("/admin/users");
@@ -1169,21 +1405,19 @@ app.post("/admin/users/:adminId/password", requireAdminPermission("admin-users:m
   return res.redirect("/admin/users");
 });
 
-app.get("/admin/payments", requireAdmin, (req, res) => {
+app.get("/admin/payments", requireAdmin, async (req, res) => {
   if (!hasPermission(req.session.admin, "payments:view")) {
     req.session.message = "You do not have permission to view payments.";
     return res.redirect("/");
   }
 
-  return serveReactApp(req, res, () => {
-    return res.status(503).send("React build not found. Run npm run unified:build.");
-  });
+  return servePage(req, res);
 });
 
-app.get("/admin/payments/export.csv", requireAdminPermission("payments:view"), (req, res) => {
-  const status = String(req.query.status || "").trim();
-  const q = String(req.query.q || "").trim();
-  const rows = store.listReconciliationRows({ status, q });
+app.get("/admin/payments/export.csv", requireAdminPermission("payments:view"), async (req, res) => {
+  const status = textField(req.query.status);
+  const q = textField(req.query.q);
+  const rows = await store.listReconciliationRows({ status, q });
 
   const headers = [
     { key: "invoiceNumber", label: "invoice_number" },
@@ -1212,26 +1446,24 @@ app.get("/admin/payments/export.csv", requireAdminPermission("payments:view"), (
   return res.status(200).send(csv);
 });
 
-app.post("/admin/invoices/:invoiceNumber/override", requireAdminPermission("payments:write"), (req, res) => {
+app.post("/admin/invoices/:invoiceNumber/override", requireAdminPermission("payments:write"), async (req, res) => {
   const invoiceNumber = req.params.invoiceNumber;
-  const status = String(req.body.status || "").trim();
-  const paymentReference = String(req.body.paymentReference || "").trim() || null;
-  const paymentProvider = String(req.body.paymentProvider || "").trim() || null;
-  const note = String(req.body.note || "").trim() || null;
-  const allowed = ["Paid", "Unpaid", "Pending", "Failed"];
-
-  if (!allowed.includes(status)) {
-    req.session.message = "Invalid status selection for manual override.";
+  const { values, error } = parseOverrideRequest(req.body || {});
+  if (error) {
+    req.session.message = error;
     return res.redirect("/admin/payments");
   }
+  const { status, paymentReference, paymentProvider, note } = values;
 
-  const updated = store.manualOverrideInvoice({
+  const updated = await store.manualOverrideInvoice({
     invoiceNumber,
     status,
     paymentReference,
-    paymentProvider,
+    paymentProvider: paymentProvider || (status === "Paid" ? "manual" : null),
     actorId: req.session.admin.username,
+    actorLabel: adminActorLabel(req.session.admin),
     note,
+    metadata: { adminId: req.session.admin.id, role: req.session.admin.role },
   });
 
   if (!updated) {
@@ -1243,22 +1475,23 @@ app.post("/admin/invoices/:invoiceNumber/override", requireAdminPermission("paym
   return res.redirect("/admin/payments");
 });
 
-app.post("/admin/reconcile", requireAdmin, (req, res) => {
+app.post("/admin/reconcile", requireAdmin, async (req, res) => {
   if (!hasPermission(req.session.admin, "payments:reconcile")) {
     req.session.message = "You do not have permission to reconcile payments.";
     return res.redirect("/admin/payments");
   }
 
-  const result = store.autoReconcileInvoices(req.session.admin.username);
+  const result = await store.autoReconcileInvoices(req.session.admin.username, adminActorLabel(req.session.admin));
   req.session.message = `Reconciliation complete: ${result.updated} updated, ${result.mismatches} mismatch(es) detected, ${result.paidWithoutTx} paid-without-tx.`;
   return res.redirect("/admin/payments");
 });
 
-app.get("/dashboard", requireAuth, (req, res) => {
-  return serveReactApp(req, res, () => {
-    return res.status(503).send("React build not found. Run npm run unified:build.");
-  });
+app.get("/dashboard", requireAuth, async (req, res) => {
+  return servePage(req, res);
 });
+
+// Unknown API routes answer in JSON (the frontend expects JSON from /api).
+app.use("/api", async (req, res) => sendApiError(res, 404, "API endpoint not found."));
 
 app.use(express.static(REACT_DIST_DIR));
 
@@ -1269,7 +1502,44 @@ app.get(/.*/, (req, res, next) => {
   return next();
 });
 
-app.listen(PORT, () => {
-  const mode = reactBuildExists() ? "Unified mode (React + admissions backend)" : "Backend-only mode";
-  console.log(`${mode} running on http://127.0.0.1:${PORT}`);
+// Error handler: malformed JSON bodies become a clean 400, anything unexpected a
+// 500 without a stack trace (the stack is logged on the server instead).
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const status = err.type === "entity.parse.failed" ? 400
+    : err.type === "entity.too.large" ? 413
+      : 500;
+  const message = status === 400 ? "Malformed request body."
+    : status === 413 ? "Request body is too large."
+      : "Something went wrong. Please try again.";
+  if (status === 500) {
+    console.error(err);
+  }
+  if (req.path.startsWith("/api/")) {
+    return sendApiError(res, status, message);
+  }
+  return res.status(status).type("text/plain").send(message);
 });
+
+async function start() {
+  await store.ensureSeed({
+    defaultAdminUsername: ADMIN_USERNAME,
+    defaultAdminPassword: ADMIN_PASSWORD,
+  });
+  app.listen(PORT, () => {
+  if (LOADED_ENV_FILE) {
+    console.log(`Loaded settings from ${path.relative(process.cwd(), LOADED_ENV_FILE) || LOADED_ENV_FILE}`);
+  }
+  const paymentMode = MOCK_GATEWAY_ENABLED ? "local test mode" : PAYSTACK_SECRET_KEY ? "Paystack hosted checkout" : "unavailable";
+  console.log(`Application fee: ${APPLICATION_FEE_CURRENCY} ${APPLICATION_FEE_AMOUNT.toFixed(2)}; payment mode: ${paymentMode}`);
+  if (reactBuildExists()) {
+    console.log(`Unified mode (React + admissions backend) running on http://127.0.0.1:${PORT}`);
+  } else {
+    console.log(
+      `Admissions API running on http://127.0.0.1:${PORT} ` +
+        "(no React build here: open the Vite dev server, http://localhost:5173, or run `npm run build`)"
+    );
+  }
+  });
+}
+start().catch((error) => { console.error(error); process.exitCode = 1; });

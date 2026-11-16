@@ -135,7 +135,7 @@ const html = String.raw`
                                                 <div class="gdlr-core-text-box-item gdlr-core-item-pdlr gdlr-core-item-pdb gdlr-core-left-align" style="padding-bottom: 35px ;">
                                                     <div class="gdlr-core-text-box-item-content" style="font-size: 16px ;text-transform: none ;">
                                                         <p>
-                                                            Enter your Application Number and Password to Continue
+                                                            Enter the email address and password you registered with to continue
                                                         </p>
                                                     </div>
                                                 </div>
@@ -150,9 +150,9 @@ const html = String.raw`
     
 			
                         <div class="quform-element">
-				<label class="control-label" for="inputPassword">Application No:</label>
+				<label class="control-label" for="inputEmail">Email Address:</label>
 				<div class="controls">
-                                    <input type="text" name="txtAppno" id="inputPassword" required="" class="input1">
+                                    <input type="email" name="email" id="inputEmail" autocomplete="email" required="" class="input1">
 				</div>
                         </div>
     <br>
@@ -162,7 +162,7 @@ const html = String.raw`
                         <div class="quform-element">
 				<label class="control-label" for="inputPassword">Password:</label>
 				<div class="controls">
-                                    <input type="password" name="txtPassword" id="inputPassword" required="" class="input1">
+                                    <input type="password" name="password" id="inputPassword" autocomplete="current-password" required="" class="input1">
 				</div>
                         </div>
                         
@@ -303,6 +303,7 @@ export function ContinueApplicationPage() {
       title={"ODFel Admissions Portal"}
       bodyClassName={"home page-template-default page page-id-2039 gdlr-core-body woocommerce-no-js tribe-no-js kingster-body kingster-body-front kingster-full  kingster-with-sticky-navigation  kingster-blockquote-style-1 gdlr-core-link-to-lightbox"}
       html={html}
+      signInIntent="continue"
     />
   );
 }
